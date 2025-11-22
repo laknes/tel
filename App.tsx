@@ -1,5 +1,4 @@
-
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AppView, Product, Category, Order, OrderStatus, TelegramConfig } from './types';
 import { Sidebar } from './components/Sidebar';
 import { ProductList } from './components/ProductList';
@@ -12,7 +11,7 @@ import { OrderList } from './components/OrderList';
 import { Auth } from './components/Auth';
 import { StorageService } from './services/storage';
 import { AuthService } from './services/auth';
-import { sendProductToTelegram, processSearchQueries } from './services/telegram';
+import { sendProductToTelegram } from './services/telegram';
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -26,8 +25,6 @@ function App() {
   const [notification, setNotification] = useState<{msg: string, type: 'success' | 'error'} | null>(null);
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [showWelcome, setShowWelcome] = useState(false);
-  
-  const pollIntervalRef = useRef<number | null>(null);
 
   useEffect(() => {
     const user = AuthService.getCurrentUser();
@@ -38,37 +35,7 @@ function App() {
     }
     const savedTheme = StorageService.getTheme();
     setTheme(savedTheme);
-
-    return () => stopGlobalPolling();
   }, []);
-
-  useEffect(() => {
-    if (isAuthenticated) {
-      startGlobalPolling();
-    } else {
-      stopGlobalPolling();
-    }
-  }, [isAuthenticated]);
-
-  const startGlobalPolling = () => {
-      if (pollIntervalRef.current) return;
-      
-      pollIntervalRef.current = window.setInterval(async () => {
-          const currentConfig = await StorageService.getTelegramConfig();
-          if (currentConfig && currentConfig.botToken) {
-              const currentProducts = await StorageService.getProducts();
-              const currentCategories = await StorageService.getCategories();
-              await processSearchQueries(currentConfig.botToken, currentProducts, currentCategories);
-          }
-      }, 5000); // Slower polling for server
-  };
-
-  const stopGlobalPolling = () => {
-      if (pollIntervalRef.current) {
-          clearInterval(pollIntervalRef.current);
-          pollIntervalRef.current = null;
-      }
-  };
 
   useEffect(() => {
     if (theme === 'dark') {
@@ -226,7 +193,7 @@ function App() {
                کاربر: {AuthService.getCurrentUser()?.fullName}
              </span>
              <span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded border border-green-200 animate-pulse">
-                ● ربات فعال
+                ● سرور فعال
              </span>
            </div>
            {currentView === AppView.PRODUCTS && !isFormOpen && (
