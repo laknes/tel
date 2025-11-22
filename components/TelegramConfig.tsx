@@ -26,14 +26,17 @@ export const TelegramConfigPanel: React.FC = () => {
   const [verifyMsg, setVerifyMsg] = useState('');
 
   useEffect(() => {
-    const saved = StorageService.getTelegramConfig();
-    if (saved) setConfig({
-        ...saved,
-        buttonText: saved.buttonText || '🛒 ثبت سفارش',
-        contactMessage: saved.contactMessage || '📞 راه های ارتباطی:\n\n🆔 پشتیبانی: @admin\n📱 تلفن: 09120000000'
-    });
-    setLogs(StorageService.getTelegramLogs());
-    setVerifiedUsers(StorageService.getVerifiedUsers());
+    const loadData = async () => {
+        const saved = await StorageService.getTelegramConfig();
+        if (saved) setConfig({
+            ...saved,
+            buttonText: saved.buttonText || '🛒 ثبت سفارش',
+            contactMessage: saved.contactMessage || '📞 راه های ارتباطی:\n\n🆔 پشتیبانی: @admin\n📱 تلفن: 09120000000'
+        });
+        setLogs(StorageService.getTelegramLogs());
+        setVerifiedUsers(await StorageService.getVerifiedUsers());
+    };
+    loadData();
   }, []);
 
   const handleSave = (e: React.FormEvent) => {
@@ -69,11 +72,11 @@ export const TelegramConfigPanel: React.FC = () => {
       setVerifyLoading(true);
       const newUsers = await checkUpdatesForContacts(config.botToken);
       let count = 0;
-      newUsers.forEach(u => {
-          StorageService.saveVerifiedUser(u);
-          count++;
-      });
-      setVerifiedUsers(StorageService.getVerifiedUsers());
+      for (const u of newUsers) {
+        await StorageService.saveVerifiedUser(u);
+        count++;
+      }
+      setVerifiedUsers(await StorageService.getVerifiedUsers());
       setVerifyMsg(count > 0 ? `${count} شماره جدید تایید شد!` : 'هیچ تاییدیه جدیدی یافت نشد.');
       setVerifyLoading(false);
   };

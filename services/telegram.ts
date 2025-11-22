@@ -328,7 +328,7 @@ export const processSearchQueries = async (
                 processedCount++;
             }
             else if (text === '📞 ارتباط با ما' || text === '/contact') {
-                const config = StorageService.getTelegramConfig();
+                const config = await StorageService.getTelegramConfig();
                 const contactMsg = config?.contactMessage || "📞 راه های ارتباطی:\n\n🆔 پشتیبانی: @admin\n📱 تلفن: 09120000000";
                 await sendTextMessage(token, chatId, contactMsg, mainMenuKeyboard);
                 processedCount++;

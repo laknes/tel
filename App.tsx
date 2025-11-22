@@ -27,7 +27,6 @@ function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [showWelcome, setShowWelcome] = useState(false);
   
-  // Telegram Polling Reference
   const pollIntervalRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -40,11 +39,9 @@ function App() {
     const savedTheme = StorageService.getTheme();
     setTheme(savedTheme);
 
-    // Cleanup polling on unmount
     return () => stopGlobalPolling();
   }, []);
 
-  // Global Polling Effect
   useEffect(() => {
     if (isAuthenticated) {
       startGlobalPolling();
@@ -56,16 +53,14 @@ function App() {
   const startGlobalPolling = () => {
       if (pollIntervalRef.current) return;
       
-      // Run every 3 seconds to keep the bot responsive
       pollIntervalRef.current = window.setInterval(async () => {
-          const currentConfig = StorageService.getTelegramConfig();
+          const currentConfig = await StorageService.getTelegramConfig();
           if (currentConfig && currentConfig.botToken) {
-              // Fetch fresh data from storage to ensure the bot has latest products
-              const currentProducts = StorageService.getProducts();
-              const currentCategories = StorageService.getCategories();
+              const currentProducts = await StorageService.getProducts();
+              const currentCategories = await StorageService.getCategories();
               await processSearchQueries(currentConfig.botToken, currentProducts, currentCategories);
           }
-      }, 3000);
+      }, 5000); // Slower polling for server
   };
 
   const stopGlobalPolling = () => {
@@ -84,11 +79,11 @@ function App() {
     StorageService.saveTheme(theme);
   }, [theme]);
 
-  const loadData = () => {
-    setProducts(StorageService.getProducts());
-    setCategories(StorageService.getCategories());
-    setOrders(StorageService.getOrders());
-    setConfig(StorageService.getTelegramConfig());
+  const loadData = async () => {
+    setProducts(await StorageService.getProducts());
+    setCategories(await StorageService.getCategories());
+    setOrders(await StorageService.getOrders());
+    setConfig(await StorageService.getTelegramConfig());
   };
 
   const checkWelcomeMessage = (username: string) => {
@@ -129,19 +124,19 @@ function App() {
     setTimeout(() => setNotification(null), 3000);
   };
 
-  const handleSaveProduct = (product: Product) => {
-    StorageService.saveProduct(product);
-    setProducts(StorageService.getProducts());
+  const handleSaveProduct = async (product: Product) => {
+    await StorageService.saveProduct(product);
+    setProducts(await StorageService.getProducts());
     setIsFormOpen(false);
     setEditingProduct(undefined);
     showNotification('محصول با موفقیت ذخیره شد.', 'success');
   };
 
-  const handleDeleteProduct = (id: string) => {
+  const handleDeleteProduct = async (id: string) => {
     const productToDelete = products.find(p => p.id === id);
     if (window.confirm(`آیا از حذف محصول "${productToDelete?.name}" اطمینان دارید؟`)) {
-      StorageService.deleteProduct(id);
-      setProducts(StorageService.getProducts());
+      await StorageService.deleteProduct(id);
+      setProducts(await StorageService.getProducts());
       showNotification('محصول حذف شد.', 'success');
       if (editingProduct?.id === id) {
         setIsFormOpen(false);
@@ -156,27 +151,31 @@ function App() {
     setCurrentView(AppView.PRODUCTS);
   };
 
-  const handleAddCategory = (name: string) => {
+  const handleAddCategory = async (name: string) => {
     const newCat: Category = { id: Date.now().toString(), name };
-    StorageService.saveCategory(newCat);
-    setCategories(StorageService.getCategories());
+    await StorageService.saveCategory(newCat);
+    setCategories(await StorageService.getCategories());
     showNotification('دسته بندی اضافه شد.', 'success');
   };
 
-  const handleDeleteCategory = (id: string) => {
-    StorageService.deleteCategory(id);
-    setCategories(StorageService.getCategories());
+  const handleDeleteCategory = async (id: string) => {
+    await StorageService.deleteCategory(id);
+    setCategories(await StorageService.getCategories());
     showNotification('دسته بندی حذف شد.', 'success');
   };
 
-  const handleUpdateOrderStatus = (orderId: string, newStatus: OrderStatus) => {
-    const updatedOrders = orders.map(o => o.id === orderId ? { ...o, status: newStatus } : o);
-    setOrders(updatedOrders);
-    showNotification('وضعیت سفارش بروزرسانی شد.', 'success');
+  const handleUpdateOrderStatus = async (orderId: string, newStatus: OrderStatus) => {
+    const order = orders.find(o => o.id === orderId);
+    if (order) {
+        const updatedOrder = { ...order, status: newStatus };
+        await StorageService.saveOrder(updatedOrder);
+        setOrders(await StorageService.getOrders());
+        showNotification('وضعیت سفارش بروزرسانی شد.', 'success');
+    }
   };
 
   const handleSendToTelegram = async (product: Product) => {
-    const currentConfig = StorageService.getTelegramConfig();
+    const currentConfig = await StorageService.getTelegramConfig();
     if (!currentConfig) {
       showNotification('تنظیمات تلگرام یافت نشد.', 'error');
       setCurrentView(AppView.TELEGRAM);
@@ -207,7 +206,6 @@ function App() {
           setCurrentView(view);
           setIsFormOpen(false);
           setEditingProduct(undefined);
-          // Refresh config when entering telegram settings to ensure consistency if needed
           if (view === AppView.TELEGRAM) loadData(); 
         }} 
         onLogout={handleLogout}

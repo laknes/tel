@@ -40,8 +40,8 @@ export const OrderList: React.FC<OrderListProps> = ({ orders, onUpdateStatus }) 
     onUpdateStatus(order.id, newStatus);
 
     // 2. Send Notification to Telegram (if configured and user verified)
-    const config = StorageService.getTelegramConfig();
-    const verifiedUsers = StorageService.getVerifiedUsers();
+    const config = await StorageService.getTelegramConfig();
+    const verifiedUsers = await StorageService.getVerifiedUsers();
     
     // Normalize phone numbers (remove spaces, handle +98 vs 09) for basic matching
     // Note: This is a simple match. In production, robust phone parsing is needed.
