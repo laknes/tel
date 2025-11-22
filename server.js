@@ -288,20 +288,47 @@ async function runBot() {
 
             await answerCallback(cb.id);
 
+            // --- LEVEL 1: CATEGORIES ---
             if (data === 'cmd_products') {
-                if (products.length === 0) {
-                    await sendMsg(chatId, "❌ محصولی موجود نیست.");
-                } else {
-                    // Generate Product Buttons (List)
-                    const productButtons = products.slice(0, 20).map(p => ([
-                        { text: `${p.name} - ${Number(p.price).toLocaleString()} ت`, callback_data: `prod_${p.id}` }
+                if (categories.length === 0) {
+                     // Fallback if no categories: show all products
+                     const productButtons = products.slice(0, 20).map(p => ([
+                        { text: `${p.name} - ${Number(p.price).toLocaleString()}`, callback_data: `prod_${p.id}` }
                     ]));
-                    // Add back button
-                    productButtons.push([{ text: "🔙 بازگشت به منو", callback_data: "cmd_start" }]);
+                    productButtons.push([{ text: "🔙 بازگشت", callback_data: "cmd_start" }]);
+                    await sendMsg(chatId, "🛍 *محصولات بدون دسته بندی:*", { inline_keyboard: productButtons });
+                } else {
+                    // Show Categories
+                    const catButtons = categories.map(c => ([
+                        { text: `📂 ${c.name}`, callback_data: `cat_${c.id}` }
+                    ]));
+                    catButtons.push([{ text: "🔙 بازگشت به منو", callback_data: "cmd_start" }]);
                     
-                    await sendMsg(chatId, "🛍 *لیست محصولات:*\nجهت مشاهده جزئیات روی نام محصول کلیک کنید:", { inline_keyboard: productButtons });
+                    await sendMsg(chatId, "🗂 *لطفاً یک دسته بندی را انتخاب کنید:*", { inline_keyboard: catButtons });
                 }
             } 
+            
+            // --- LEVEL 2: PRODUCT LIST (By Category) ---
+            else if (data.startsWith('cat_')) {
+                const catId = data.split('_')[1];
+                const category = categories.find(c => c.id === catId);
+                const filteredProducts = products.filter(p => p.category === catId);
+                
+                if (filteredProducts.length === 0) {
+                    await sendMsg(chatId, `❌ هیچ محصولی در دسته "${category?.name || 'انتخاب شده'}" یافت نشد.`, {
+                         inline_keyboard: [[{ text: "🔙 بازگشت به دسته‌ها", callback_data: "cmd_products" }]]
+                    });
+                } else {
+                    const productButtons = filteredProducts.slice(0, 20).map(p => ([
+                        { text: `${p.name} - ${Number(p.price).toLocaleString()} ت`, callback_data: `prod_${p.id}` }
+                    ]));
+                    productButtons.push([{ text: "🔙 بازگشت به دسته‌ها", callback_data: "cmd_products" }]);
+                    
+                    await sendMsg(chatId, `📂 دسته: *${category?.name}*\n👇 محصول مورد نظر را انتخاب کنید:`, { inline_keyboard: productButtons });
+                }
+            }
+
+            // --- LEVEL 3: PRODUCT DETAILS ---
             else if (data.startsWith('prod_')) {
                 const pid = data.split('_')[1];
                 const product = products.find(p => p.id === pid);
@@ -320,7 +347,8 @@ ${product.description}
                     const itemMarkup = {
                         inline_keyboard: [
                             [{ text: config.buttonText || "🛒 ثبت سفارش", url: `https://t.me/${config.supportId?.replace('@','') || 'admin'}` }],
-                            [{ text: "🔙 بازگشت به لیست", callback_data: "cmd_products" }]
+                            // Back button goes to the specific category of this product
+                            [{ text: "🔙 بازگشت به لیست", callback_data: `cat_${product.category}` }]
                         ]
                     };
 
@@ -329,8 +357,6 @@ ${product.description}
                         if (buffer) await sendPhoto(chatId, buffer, caption, itemMarkup);
                         else await sendMsg(chatId, caption, itemMarkup);
                     } else if (product.imageUrl) {
-                         // External URL logic (simplified to send msg for now if not data URI)
-                         // For full url support would use sendPhoto with url string, but assuming data uri mostly
                          await sendMsg(chatId, caption + `\n\n🖼 [تصویر](${product.imageUrl})`, itemMarkup);
                     } else {
                         await sendMsg(chatId, caption, itemMarkup);
@@ -363,7 +389,7 @@ ${product.description}
                 const u = update.message.from;
                 const ph = update.message.contact.phone_number;
                 await pool.query('INSERT INTO verified_users VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE phoneNumber=?', 
-                [u.id, u.first_name, u.last_name, u.username, ph, Date.now(), ph]); // Fixed param count in sql if needed, but keeping simple
+                [u.id, u.first_name, u.last_name, u.username, ph, Date.now(), ph]); 
                 await sendMsg(chatId, `✅ *هویت تایید شد!*\nخوش آمدید.`, mainMenuInline);
             }
             
@@ -373,7 +399,6 @@ ${product.description}
                 
                 if (text === '/start') {
                     await sendMsg(chatId, `👋 سلام!\nبرای استفاده از ربات لطفاً شماره خود را تایید کنید (اگر قبلا تایید نکردید).`, contactMenu);
-                    // Also send main menu for users who are already verified (simplified UX)
                     setTimeout(() => sendMsg(chatId, "🏠 *منوی اصلی*", mainMenuInline), 500);
                 }
                 else if (text.length > 1 && !text.startsWith('/')) {
