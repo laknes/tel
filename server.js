@@ -291,7 +291,7 @@ async function runBot() {
             // --- LEVEL 1: CATEGORIES ---
             if (data === 'cmd_products') {
                 if (categories.length === 0) {
-                     // Fallback if no categories: show all products
+                     // Fallback if no categories
                      const productButtons = products.slice(0, 20).map(p => ([
                         { text: `${p.name} - ${Number(p.price).toLocaleString()}`, callback_data: `prod_${p.id}` }
                     ]));
@@ -347,7 +347,6 @@ ${product.description}
                     const itemMarkup = {
                         inline_keyboard: [
                             [{ text: config.buttonText || "🛒 ثبت سفارش", url: `https://t.me/${config.supportId?.replace('@','') || 'admin'}` }],
-                            // Back button goes to the specific category of this product
                             [{ text: "🔙 بازگشت به لیست", callback_data: `cat_${product.category}` }]
                         ]
                     };
@@ -383,9 +382,10 @@ ${product.description}
         // 3. TEXT MESSAGES
         if (update.message) {
             const chatId = update.message.chat.id;
+            const userId = update.message.from.id;
             
             // Handle Contact Share
-            if (update.message.contact && update.message.contact.user_id === update.message.from.id) {
+            if (update.message.contact && update.message.contact.user_id === userId) {
                 const u = update.message.from;
                 const ph = update.message.contact.phone_number;
                 await pool.query('INSERT INTO verified_users VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE phoneNumber=?', 
@@ -398,8 +398,16 @@ ${product.description}
                 const text = update.message.text.toLowerCase().trim();
                 
                 if (text === '/start') {
-                    await sendMsg(chatId, `👋 سلام!\nبرای استفاده از ربات لطفاً شماره خود را تایید کنید (اگر قبلا تایید نکردید).`, contactMenu);
-                    setTimeout(() => sendMsg(chatId, "🏠 *منوی اصلی*", mainMenuInline), 500);
+                    // Check if user is already verified
+                    const [verifiedRows] = await pool.query('SELECT * FROM verified_users WHERE userId = ?', [userId]);
+                    
+                    if (verifiedRows.length > 0) {
+                        // User exists, show main menu
+                        await sendMsg(chatId, `👋 سلام ${update.message.from.first_name} عزیز!\nخوش آمدید.`, mainMenuInline);
+                    } else {
+                        // User not verified, ask for contact
+                        await sendMsg(chatId, `👋 سلام!\nبرای استفاده از ربات لطفاً شماره خود را تایید کنید.`, contactMenu);
+                    }
                 }
                 else if (text.length > 1 && !text.startsWith('/')) {
                     // Text Search -> Return Buttons
