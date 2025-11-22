@@ -74,6 +74,7 @@ async function initDB() {
         id VARCHAR(255) PRIMARY KEY,
         customerName VARCHAR(255),
         customerPhone VARCHAR(50),
+        customerAddress TEXT,
         totalAmount DECIMAL(15,0),
         status VARCHAR(50),
         items JSON,
@@ -88,6 +89,11 @@ async function initDB() {
     for (const sql of tables) {
       await pool.query(sql);
     }
+    
+    // Schema Migration: Add customerAddress if not exists
+    try {
+        await pool.query("ALTER TABLE orders ADD COLUMN customerAddress TEXT");
+    } catch (e) { /* Column exists */ }
 
     const [rows] = await pool.query('SELECT * FROM users WHERE username = ?', ['admin']);
     if (rows.length === 0) {
@@ -152,13 +158,13 @@ app.delete('/api/categories/:id', checkDB, async (req, res) => {
 });
 
 app.get('/api/orders', checkDB, async (req, res) => {
-  const [rows] = await pool.query('SELECT * FROM orders');
+  const [rows] = await pool.query('SELECT * FROM orders ORDER BY createdAt DESC');
   res.json(rows.map(r => ({...r, items: typeof r.items === 'string' ? JSON.parse(r.items) : r.items})));
 });
 app.post('/api/orders', checkDB, async (req, res) => {
   const o = req.body;
-  await pool.query('INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=?', 
-  [o.id, o.customerName, o.customerPhone, o.totalAmount, o.status, JSON.stringify(o.items), o.createdAt, o.status]);
+  await pool.query('INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=?', 
+  [o.id, o.customerName, o.customerPhone, o.customerAddress, o.totalAmount, o.status, JSON.stringify(o.items), o.createdAt, o.status]);
   res.json({ success: true });
 });
 
@@ -186,7 +192,10 @@ app.post('/api/verified-users', checkDB, async (req, res) => {
 const TG_BASE = 'https://api.telegram.org/bot';
 let lastUpdateId = 0;
 
-// Helper to convert Base64 to Buffer
+// User Sessions for Order Wizard
+// Structure: { chatId: { step: 'NAME' | 'ADDRESS' | 'PHONE', tempOrder: { productId, name, address, phone } } }
+const userSessions = {};
+
 const dataURItoBuffer = (dataURI) => {
   if (!dataURI || !dataURI.startsWith('data:')) return null;
   const byteString = atob(dataURI.split(',')[1]);
@@ -217,35 +226,31 @@ async function runBot() {
     const [categories] = await pool.query('SELECT * FROM categories');
     const getCatName = (id) => categories.find(c => c.id === id)?.name || 'عمومی';
 
-    // Helper: Send Message
+    // Helpers
     const sendMsg = async (chatId, text, markup = null) => {
         const body = { chat_id: chatId, text, parse_mode: 'Markdown' };
         if (markup) body.reply_markup = markup;
         await fetch(`${TG_BASE}${config.botToken}/sendMessage`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
     };
 
-    // Helper: Send Photo
     const sendPhoto = async (chatId, photoData, caption, markup = null) => {
         const formData = new FormData();
         formData.append('chat_id', chatId);
         formData.append('caption', caption);
         formData.append('parse_mode', 'Markdown');
         if (markup) formData.append('reply_markup', JSON.stringify(markup));
-        
         const blob = new Blob([photoData], { type: 'image/jpeg' });
         formData.append('photo', blob, 'image.jpg');
-
         await fetch(`${TG_BASE}${config.botToken}/sendPhoto`, { method: 'POST', body: formData });
     };
 
-    // Helper: Answer Callback
     const answerCallback = async (callbackId, text = null) => {
         const body = { callback_query_id: callbackId };
         if (text) body.text = text;
         await fetch(`${TG_BASE}${config.botToken}/answerCallbackQuery`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
     };
 
-    // KEYBOARDS
+    // Keyboards
     const mainMenuInline = {
         inline_keyboard: [
             [{ text: "🛍 لیست محصولات", callback_data: "cmd_products" }, { text: "🔍 جستجو", callback_data: "cmd_search" }],
@@ -256,6 +261,10 @@ async function runBot() {
     const contactMenu = {
         keyboard: [[{ text: "📱 تایید شماره تلفن (الزامی)", request_contact: true }]],
         resize_keyboard: true, one_time_keyboard: true
+    };
+
+    const cancelOrderBtn = {
+        inline_keyboard: [[{ text: "❌ لغو سفارش", callback_data: "cmd_cancel_order" }]]
     };
 
     // PROCESS UPDATES
@@ -271,7 +280,7 @@ async function runBot() {
                 description: `کد: ${p.productCode || '-'} | ${Number(p.price).toLocaleString()} تومان`,
                 thumb_url: p.imageUrl || 'https://via.placeholder.com/100',
                 input_message_content: { message_text: `🛍 *${p.name}*\n🔢 کد: ${p.productCode}\n💵 ${Number(p.price).toLocaleString()} تومان\n\n📝 ${p.description}`, parse_mode: 'Markdown' },
-                reply_markup: { inline_keyboard: [[{ text: "🛒 سفارش", url: `https://t.me/${config.supportId?.replace('@','') || 'admin'}` }]] }
+                reply_markup: { inline_keyboard: [[{ text: "🛒 خرید", callback_data: `order_${p.id}` }]] }
             }));
             await fetch(`${TG_BASE}${config.botToken}/answerInlineQuery`, {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -280,7 +289,7 @@ async function runBot() {
             continue;
         }
 
-        // 2. CALLBACK QUERY (Glass Button Clicks)
+        // 2. CALLBACK QUERY
         if (update.callback_query) {
             const cb = update.callback_query;
             const data = cb.data;
@@ -288,47 +297,62 @@ async function runBot() {
 
             await answerCallback(cb.id);
 
-            // --- LEVEL 1: CATEGORIES ---
-            if (data === 'cmd_products') {
+            // CANCEL ORDER
+            if (data === 'cmd_cancel_order') {
+                delete userSessions[chatId];
+                await sendMsg(chatId, "❌ سفارش لغو شد.", mainMenuInline);
+                continue;
+            }
+
+            // ORDER START
+            if (data.startsWith('order_')) {
+                const pid = data.split('_')[1];
+                const product = products.find(p => p.id === pid);
+                
+                if (!product) {
+                    await sendMsg(chatId, "❌ محصول یافت نشد.");
+                } else {
+                    // Initialize Session
+                    userSessions[chatId] = {
+                        step: 'AWAITING_NAME',
+                        tempOrder: {
+                            productId: pid,
+                            productName: product.name,
+                            productPrice: product.price
+                        }
+                    };
+                    await sendMsg(chatId, `📝 در حال ثبت سفارش برای: *${product.name}*\n\nلطفاً *نام و نام خانوادگی* خود را وارد کنید:`, cancelOrderBtn);
+                }
+            }
+
+            // NAVIGATION
+            else if (data === 'cmd_products') {
                 if (categories.length === 0) {
-                     // Fallback if no categories
                      const productButtons = products.slice(0, 20).map(p => ([
                         { text: `${p.name} - ${Number(p.price).toLocaleString()}`, callback_data: `prod_${p.id}` }
                     ]));
                     productButtons.push([{ text: "🔙 بازگشت", callback_data: "cmd_start" }]);
-                    await sendMsg(chatId, "🛍 *محصولات بدون دسته بندی:*", { inline_keyboard: productButtons });
+                    await sendMsg(chatId, "🛍 *محصولات:*", { inline_keyboard: productButtons });
                 } else {
-                    // Show Categories
                     const catButtons = categories.map(c => ([
                         { text: `📂 ${c.name}`, callback_data: `cat_${c.id}` }
                     ]));
                     catButtons.push([{ text: "🔙 بازگشت به منو", callback_data: "cmd_start" }]);
-                    
-                    await sendMsg(chatId, "🗂 *لطفاً یک دسته بندی را انتخاب کنید:*", { inline_keyboard: catButtons });
+                    await sendMsg(chatId, "🗂 *انتخاب دسته بندی:*", { inline_keyboard: catButtons });
                 }
             } 
-            
-            // --- LEVEL 2: PRODUCT LIST (By Category) ---
             else if (data.startsWith('cat_')) {
                 const catId = data.split('_')[1];
                 const category = categories.find(c => c.id === catId);
                 const filteredProducts = products.filter(p => p.category === catId);
                 
-                if (filteredProducts.length === 0) {
-                    await sendMsg(chatId, `❌ هیچ محصولی در دسته "${category?.name || 'انتخاب شده'}" یافت نشد.`, {
-                         inline_keyboard: [[{ text: "🔙 بازگشت به دسته‌ها", callback_data: "cmd_products" }]]
-                    });
-                } else {
-                    const productButtons = filteredProducts.slice(0, 20).map(p => ([
-                        { text: `${p.name} - ${Number(p.price).toLocaleString()} ت`, callback_data: `prod_${p.id}` }
-                    ]));
-                    productButtons.push([{ text: "🔙 بازگشت به دسته‌ها", callback_data: "cmd_products" }]);
-                    
-                    await sendMsg(chatId, `📂 دسته: *${category?.name}*\n👇 محصول مورد نظر را انتخاب کنید:`, { inline_keyboard: productButtons });
-                }
+                const productButtons = filteredProducts.slice(0, 20).map(p => ([
+                    { text: `${p.name} - ${Number(p.price).toLocaleString()} ت`, callback_data: `prod_${p.id}` }
+                ]));
+                productButtons.push([{ text: "🔙 بازگشت", callback_data: "cmd_products" }]);
+                
+                await sendMsg(chatId, `📂 دسته: *${category?.name}*`, { inline_keyboard: productButtons });
             }
-
-            // --- LEVEL 3: PRODUCT DETAILS ---
             else if (data.startsWith('prod_')) {
                 const pid = data.split('_')[1];
                 const product = products.find(p => p.id === pid);
@@ -336,7 +360,6 @@ async function runBot() {
                     const caption = `
 🛍 *${product.name}*
 🔢 *کد:* ${product.productCode || '---'}
-
 📂 *دسته:* ${getCatName(product.category)}
 💵 *قیمت:* ${Number(product.price).toLocaleString()} تومان
 
@@ -344,10 +367,11 @@ async function runBot() {
 ${product.description}
                     `.trim();
 
+                    // Changed Button to trigger Internal Order Flow
                     const itemMarkup = {
                         inline_keyboard: [
-                            [{ text: config.buttonText || "🛒 ثبت سفارش", url: `https://t.me/${config.supportId?.replace('@','') || 'admin'}` }],
-                            [{ text: "🔙 بازگشت به لیست", callback_data: `cat_${product.category}` }]
+                            [{ text: "🛒 ثبت سفارش (پرداخت درب منزل)", callback_data: `order_${product.id}` }],
+                            [{ text: "🔙 بازگشت", callback_data: `cat_${product.category}` }]
                         ]
                     };
 
@@ -360,18 +384,7 @@ ${product.description}
                     } else {
                         await sendMsg(chatId, caption, itemMarkup);
                     }
-                } else {
-                    await sendMsg(chatId, "❌ محصول یافت نشد.");
                 }
-            }
-            else if (data === 'cmd_search') {
-                await sendMsg(chatId, "🔎 برای جستجو، نام کالا را تایپ کنید.");
-            }
-            else if (data === 'cmd_contact') {
-                await sendMsg(chatId, config.contactMessage || "🆔 @admin", { inline_keyboard: [[{ text: "🔙 بازگشت", callback_data: "cmd_start" }]] });
-            }
-            else if (data === 'cmd_help') {
-                await sendMsg(chatId, "ℹ️ *راهنما*\nاز دکمه‌های شیشه‌ای برای گشت و گذار در فروشگاه استفاده کنید.", { inline_keyboard: [[{ text: "🔙 بازگشت", callback_data: "cmd_start" }]] });
             }
             else if (data === 'cmd_start') {
                 await sendMsg(chatId, "🏠 *منوی اصلی*", mainMenuInline);
@@ -384,7 +397,100 @@ ${product.description}
             const chatId = update.message.chat.id;
             const userId = update.message.from.id;
             
-            // Handle Contact Share
+            // --- ORDER WIZARD ---
+            if (userSessions[chatId]) {
+                const session = userSessions[chatId];
+                const text = update.message.text;
+
+                if (text && (text === '/start' || text === '❌ لغو سفارش')) {
+                    delete userSessions[chatId];
+                    await sendMsg(chatId, "❌ فرآیند لغو شد.", mainMenuInline);
+                    continue;
+                }
+
+                if (session.step === 'AWAITING_NAME') {
+                    if (!text) { await sendMsg(chatId, "لطفا نام خود را به صورت متن وارد کنید:"); continue; }
+                    session.tempOrder.customerName = text;
+                    session.step = 'AWAITING_ADDRESS';
+                    await sendMsg(chatId, `✅ نام ثبت شد: ${text}\n\n📍 حالا لطفا *آدرس دقیق* خود را وارد کنید:`, cancelOrderBtn);
+                }
+                else if (session.step === 'AWAITING_ADDRESS') {
+                    if (!text) { await sendMsg(chatId, "لطفا آدرس را به صورت متن وارد کنید:"); continue; }
+                    session.tempOrder.customerAddress = text;
+                    session.step = 'AWAITING_PHONE';
+                    
+                    // Check if we have phone in verified_users
+                    const [vUsers] = await pool.query('SELECT phoneNumber FROM verified_users WHERE userId = ?', [userId]);
+                    
+                    if (vUsers.length > 0) {
+                        const phone = vUsers[0].phoneNumber;
+                        // Auto-complete order with saved phone
+                        const orderId = `ORD-${Date.now().toString().slice(-6)}`;
+                        const order = {
+                            id: orderId,
+                            customerName: session.tempOrder.customerName,
+                            customerPhone: phone,
+                            customerAddress: session.tempOrder.customerAddress,
+                            totalAmount: session.tempOrder.productPrice,
+                            status: 'PENDING',
+                            items: [{
+                                productId: session.tempOrder.productId,
+                                productName: session.tempOrder.productName,
+                                quantity: 1,
+                                priceAtTime: session.tempOrder.productPrice
+                            }],
+                            createdAt: Date.now()
+                        };
+
+                        await pool.query('INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?, ?)', 
+                        [order.id, order.customerName, order.customerPhone, order.customerAddress, order.totalAmount, order.status, JSON.stringify(order.items), order.createdAt]);
+
+                        delete userSessions[chatId];
+                        await sendMsg(chatId, `🎉 *سفارش شما با موفقیت ثبت شد!* \n\n🧾 شماره سفارش: \`${orderId}\`\n📦 محصول: ${session.tempOrder.productName}\n\nهمکاران ما جهت هماهنگی ارسال با شما تماس خواهند گرفت.`, mainMenuInline);
+                    } else {
+                        // Ask for phone manually
+                        await sendMsg(chatId, `✅ آدرس ثبت شد.\n\n📞 لطفا *شماره تماس* خود را وارد کنید (یا دکمه ارسال شماره را بزنید):`, 
+                             { keyboard: [[{text: "📱 ارسال شماره تلفن", request_contact: true}]], resize_keyboard: true, one_time_keyboard: true }
+                        );
+                    }
+                }
+                else if (session.step === 'AWAITING_PHONE') {
+                    let phone = text;
+                    if (update.message.contact) {
+                        phone = update.message.contact.phone_number;
+                    }
+
+                    if (!phone) { await sendMsg(chatId, "لطفا شماره معتبر وارد کنید:"); continue; }
+
+                    const orderId = `ORD-${Date.now().toString().slice(-6)}`;
+                        const order = {
+                            id: orderId,
+                            customerName: session.tempOrder.customerName,
+                            customerPhone: phone,
+                            customerAddress: session.tempOrder.customerAddress,
+                            totalAmount: session.tempOrder.productPrice,
+                            status: 'PENDING',
+                            items: [{
+                                productId: session.tempOrder.productId,
+                                productName: session.tempOrder.productName,
+                                quantity: 1,
+                                priceAtTime: session.tempOrder.productPrice
+                            }],
+                            createdAt: Date.now()
+                        };
+
+                    await pool.query('INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?, ?)', 
+                    [order.id, order.customerName, order.customerPhone, order.customerAddress, order.totalAmount, order.status, JSON.stringify(order.items), order.createdAt]);
+
+                    delete userSessions[chatId];
+                    await sendMsg(chatId, `🎉 *سفارش شما با موفقیت ثبت شد!* \n\n🧾 شماره سفارش: \`${orderId}\`\n📦 محصول: ${session.tempOrder.productName}\n\nهمکاران ما با شما تماس خواهند گرفت.`, mainMenuInline);
+                }
+                continue;
+            }
+
+            // --- NORMAL FLOW ---
+            
+            // Handle Contact Share (Verification)
             if (update.message.contact && update.message.contact.user_id === userId) {
                 const u = update.message.from;
                 const ph = update.message.contact.phone_number;
@@ -398,27 +504,11 @@ ${product.description}
                 const text = update.message.text.toLowerCase().trim();
                 
                 if (text === '/start') {
-                    // Check if user is already verified
                     const [verifiedRows] = await pool.query('SELECT * FROM verified_users WHERE userId = ?', [userId]);
-                    
                     if (verifiedRows.length > 0) {
-                        // User exists, show main menu
                         await sendMsg(chatId, `👋 سلام ${update.message.from.first_name} عزیز!\nخوش آمدید.`, mainMenuInline);
                     } else {
-                        // User not verified, ask for contact
                         await sendMsg(chatId, `👋 سلام!\nبرای استفاده از ربات لطفاً شماره خود را تایید کنید.`, contactMenu);
-                    }
-                }
-                else if (text.length > 1 && !text.startsWith('/')) {
-                    // Text Search -> Return Buttons
-                    const found = products.filter(p => p.name.toLowerCase().includes(text));
-                    if (found.length) {
-                        const productButtons = found.slice(0, 10).map(p => ([
-                            { text: `${p.name} - ${Number(p.price).toLocaleString()} ت`, callback_data: `prod_${p.id}` }
-                        ]));
-                        await sendMsg(chatId, `🔎 نتایج جستجو برای "${text}":`, { inline_keyboard: productButtons });
-                    } else {
-                        await sendMsg(chatId, "❌ یافت نشد.", mainMenuInline);
                     }
                 }
             }
