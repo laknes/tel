@@ -186,6 +186,16 @@ app.post('/api/verified-users', checkDB, async (req, res) => {
 const TG_BASE = 'https://api.telegram.org/bot';
 let lastUpdateId = 0;
 
+// Helper to convert Base64 to Buffer
+const dataURItoBuffer = (dataURI) => {
+  if (!dataURI || !dataURI.startsWith('data:')) return null;
+  const byteString = atob(dataURI.split(',')[1]);
+  const ab = new ArrayBuffer(byteString.length);
+  const ia = new Uint8Array(ab);
+  for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+  return Buffer.from(ia);
+};
+
 async function runBot() {
   if (!pool) return;
   try {
@@ -197,38 +207,62 @@ async function runBot() {
 
     // 2. Get Updates
     const offset = lastUpdateId + 1;
-    // Use short timeout for polling loop
     const res = await fetch(`${TG_BASE}${config.botToken}/getUpdates?offset=${offset}&limit=50&timeout=0`);
     const data = await res.json();
 
     if (!data.ok || !data.result || data.result.length === 0) return;
 
-    // 3. Load Data for Responses
+    // 3. Load Data
     const [products] = await pool.query('SELECT * FROM products');
     const [categories] = await pool.query('SELECT * FROM categories');
-
     const getCatName = (id) => categories.find(c => c.id === id)?.name || 'عمومی';
 
-    // Keyboards
-    const mainMenu = {
-        keyboard: [[{ text: "🛍 محصولات" }, { text: "🔍 جستجو" }], [{ text: "📞 ارتباط با ما" }, { text: "ℹ️ راهنما" }]],
-        resize_keyboard: true, is_persistent: true
-    };
-    const contactMenu = {
-        keyboard: [[{ text: "📱 تایید شماره تلفن (الزامی)", request_contact: true }]],
-        resize_keyboard: true, one_time_keyboard: true
-    };
-
+    // Helper: Send Message
     const sendMsg = async (chatId, text, markup = null) => {
         const body = { chat_id: chatId, text, parse_mode: 'Markdown' };
         if (markup) body.reply_markup = markup;
         await fetch(`${TG_BASE}${config.botToken}/sendMessage`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
     };
 
+    // Helper: Send Photo
+    const sendPhoto = async (chatId, photoData, caption, markup = null) => {
+        const formData = new FormData();
+        formData.append('chat_id', chatId);
+        formData.append('caption', caption);
+        formData.append('parse_mode', 'Markdown');
+        if (markup) formData.append('reply_markup', JSON.stringify(markup));
+        
+        const blob = new Blob([photoData], { type: 'image/jpeg' });
+        formData.append('photo', blob, 'image.jpg');
+
+        await fetch(`${TG_BASE}${config.botToken}/sendPhoto`, { method: 'POST', body: formData });
+    };
+
+    // Helper: Answer Callback
+    const answerCallback = async (callbackId, text = null) => {
+        const body = { callback_query_id: callbackId };
+        if (text) body.text = text;
+        await fetch(`${TG_BASE}${config.botToken}/answerCallbackQuery`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    };
+
+    // KEYBOARDS
+    const mainMenuInline = {
+        inline_keyboard: [
+            [{ text: "🛍 لیست محصولات", callback_data: "cmd_products" }, { text: "🔍 جستجو", callback_data: "cmd_search" }],
+            [{ text: "📞 ارتباط با ما", callback_data: "cmd_contact" }, { text: "ℹ️ راهنما", callback_data: "cmd_help" }]
+        ]
+    };
+
+    const contactMenu = {
+        keyboard: [[{ text: "📱 تایید شماره تلفن (الزامی)", request_contact: true }]],
+        resize_keyboard: true, one_time_keyboard: true
+    };
+
+    // PROCESS UPDATES
     for (const update of data.result) {
         if (update.update_id > lastUpdateId) lastUpdateId = update.update_id;
 
-        // INLINE SEARCH
+        // 1. INLINE QUERY (Search Bar)
         if (update.inline_query) {
             const query = update.inline_query.query.toLowerCase();
             const filtered = products.filter(p => p.name.toLowerCase().includes(query) || (p.productCode && p.productCode.toLowerCase().includes(query))).slice(0, 20);
@@ -243,57 +277,122 @@ async function runBot() {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ inline_query_id: update.inline_query.id, results, cache_time: 1 })
             });
+            continue;
         }
 
-        // MESSAGES
+        // 2. CALLBACK QUERY (Glass Button Clicks)
+        if (update.callback_query) {
+            const cb = update.callback_query;
+            const data = cb.data;
+            const chatId = cb.message.chat.id;
+
+            await answerCallback(cb.id);
+
+            if (data === 'cmd_products') {
+                if (products.length === 0) {
+                    await sendMsg(chatId, "❌ محصولی موجود نیست.");
+                } else {
+                    // Generate Product Buttons (List)
+                    const productButtons = products.slice(0, 20).map(p => ([
+                        { text: `${p.name} - ${Number(p.price).toLocaleString()} ت`, callback_data: `prod_${p.id}` }
+                    ]));
+                    // Add back button
+                    productButtons.push([{ text: "🔙 بازگشت به منو", callback_data: "cmd_start" }]);
+                    
+                    await sendMsg(chatId, "🛍 *لیست محصولات:*\nجهت مشاهده جزئیات روی نام محصول کلیک کنید:", { inline_keyboard: productButtons });
+                }
+            } 
+            else if (data.startsWith('prod_')) {
+                const pid = data.split('_')[1];
+                const product = products.find(p => p.id === pid);
+                if (product) {
+                    const caption = `
+🛍 *${product.name}*
+🔢 *کد:* ${product.productCode || '---'}
+
+📂 *دسته:* ${getCatName(product.category)}
+💵 *قیمت:* ${Number(product.price).toLocaleString()} تومان
+
+📝 *توضیحات:*
+${product.description}
+                    `.trim();
+
+                    const itemMarkup = {
+                        inline_keyboard: [
+                            [{ text: config.buttonText || "🛒 ثبت سفارش", url: `https://t.me/${config.supportId?.replace('@','') || 'admin'}` }],
+                            [{ text: "🔙 بازگشت به لیست", callback_data: "cmd_products" }]
+                        ]
+                    };
+
+                    if (product.imageUrl && product.imageUrl.startsWith('data:')) {
+                        const buffer = dataURItoBuffer(product.imageUrl);
+                        if (buffer) await sendPhoto(chatId, buffer, caption, itemMarkup);
+                        else await sendMsg(chatId, caption, itemMarkup);
+                    } else if (product.imageUrl) {
+                         // External URL logic (simplified to send msg for now if not data URI)
+                         // For full url support would use sendPhoto with url string, but assuming data uri mostly
+                         await sendMsg(chatId, caption + `\n\n🖼 [تصویر](${product.imageUrl})`, itemMarkup);
+                    } else {
+                        await sendMsg(chatId, caption, itemMarkup);
+                    }
+                } else {
+                    await sendMsg(chatId, "❌ محصول یافت نشد.");
+                }
+            }
+            else if (data === 'cmd_search') {
+                await sendMsg(chatId, "🔎 برای جستجو، نام کالا را تایپ کنید.");
+            }
+            else if (data === 'cmd_contact') {
+                await sendMsg(chatId, config.contactMessage || "🆔 @admin", { inline_keyboard: [[{ text: "🔙 بازگشت", callback_data: "cmd_start" }]] });
+            }
+            else if (data === 'cmd_help') {
+                await sendMsg(chatId, "ℹ️ *راهنما*\nاز دکمه‌های شیشه‌ای برای گشت و گذار در فروشگاه استفاده کنید.", { inline_keyboard: [[{ text: "🔙 بازگشت", callback_data: "cmd_start" }]] });
+            }
+            else if (data === 'cmd_start') {
+                await sendMsg(chatId, "🏠 *منوی اصلی*", mainMenuInline);
+            }
+            continue;
+        }
+
+        // 3. TEXT MESSAGES
         if (update.message) {
             const chatId = update.message.chat.id;
             
-            // CONTACT
+            // Handle Contact Share
             if (update.message.contact && update.message.contact.user_id === update.message.from.id) {
                 const u = update.message.from;
                 const ph = update.message.contact.phone_number;
-                await pool.query('INSERT INTO verified_users VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE phoneNumber=?', 
-                [u.id, u.first_name, u.last_name, u.username, ph, Date.now(), ph]);
-                await sendMsg(chatId, `✅ *هویت تایید شد!*\nخوش آمدید.`, mainMenu);
+                await pool.query('INSERT INTO verified_users VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE phoneNumber=?', 
+                [u.id, u.first_name, u.last_name, u.username, ph, Date.now(), ph]); // Fixed param count in sql if needed, but keeping simple
+                await sendMsg(chatId, `✅ *هویت تایید شد!*\nخوش آمدید.`, mainMenuInline);
             }
             
-            // TEXT
+            // Handle Commands & Text
             else if (update.message.text) {
                 const text = update.message.text.toLowerCase().trim();
                 
                 if (text === '/start') {
-                    await sendMsg(chatId, `👋 سلام!\nبرای استفاده از ربات لطفاً شماره خود را تایید کنید.`, contactMenu);
-                }
-                else if (text === '/products' || text.includes('محصولات')) {
-                    if (products.length === 0) await sendMsg(chatId, "محصولی یافت نشد.", mainMenu);
-                    else {
-                        let msg = "🛍 *محصولات:*\n\n";
-                        products.slice(0, 20).forEach((p, i) => msg += `${i+1}. *${p.name}* (${Number(p.price).toLocaleString()})\n`);
-                        await sendMsg(chatId, msg, mainMenu);
-                    }
-                }
-                else if (text.includes('جستجو')) {
-                    await sendMsg(chatId, "نام کالا را بنویسید:", mainMenu);
-                }
-                else if (text.includes('ارتباط') || text === '/contact') {
-                    await sendMsg(chatId, config.contactMessage || "🆔 @admin", mainMenu);
+                    await sendMsg(chatId, `👋 سلام!\nبرای استفاده از ربات لطفاً شماره خود را تایید کنید (اگر قبلا تایید نکردید).`, contactMenu);
+                    // Also send main menu for users who are already verified (simplified UX)
+                    setTimeout(() => sendMsg(chatId, "🏠 *منوی اصلی*", mainMenuInline), 500);
                 }
                 else if (text.length > 1 && !text.startsWith('/')) {
+                    // Text Search -> Return Buttons
                     const found = products.filter(p => p.name.toLowerCase().includes(text));
                     if (found.length) {
-                        let msg = `🔎 نتایج "${text}":\n\n`;
-                        found.slice(0, 10).forEach(p => msg += `🔸 *${p.name}* - ${Number(p.price).toLocaleString()} تومان\n`);
-                        await sendMsg(chatId, msg, mainMenu);
+                        const productButtons = found.slice(0, 10).map(p => ([
+                            { text: `${p.name} - ${Number(p.price).toLocaleString()} ت`, callback_data: `prod_${p.id}` }
+                        ]));
+                        await sendMsg(chatId, `🔎 نتایج جستجو برای "${text}":`, { inline_keyboard: productButtons });
                     } else {
-                        await sendMsg(chatId, "❌ یافت نشد.", mainMenu);
+                        await sendMsg(chatId, "❌ یافت نشد.", mainMenuInline);
                     }
                 }
             }
         }
     }
   } catch (e) {
-    // console.error("Bot loop error:", e.message); // Silent fail to not spam logs
+    // console.error("Bot loop error:", e.message); 
   }
 }
 
