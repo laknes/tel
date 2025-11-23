@@ -186,11 +186,18 @@ export const ProductList: React.FC<ProductListProps> = ({
                 <div className="absolute top-3 right-3 bg-white/90 dark:bg-gray-800/90 backdrop-blur-sm px-3 py-1 rounded-full text-xs font-bold text-gray-700 dark:text-gray-200 shadow-sm">
                   {getCategoryName(product.category)}
                 </div>
-                {product.productCode && (
-                  <div className="absolute bottom-3 left-3 bg-black/70 text-white px-2 py-1 rounded text-xs font-mono">
-                    {product.productCode}
-                  </div>
-                )}
+                <div className="absolute bottom-3 left-3 flex gap-2">
+                    {product.productCode && (
+                    <div className="bg-black/70 text-white px-2 py-1 rounded text-xs font-mono">
+                        {product.productCode}
+                    </div>
+                    )}
+                    {product.itemsPerPackage && product.itemsPerPackage > 1 && (
+                        <div className="bg-brand-600/90 text-white px-2 py-1 rounded text-xs font-bold">
+                            {product.itemsPerPackage} تایی
+                        </div>
+                    )}
+                </div>
               </div>
 
               <div className="p-5">

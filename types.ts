@@ -4,6 +4,7 @@ export interface Product {
   productCode: string;
   name: string;
   price: number;
+  itemsPerPackage?: number; // Added field
   category: string;
   description: string;
   imageUrl: string;
@@ -22,7 +23,7 @@ export interface TelegramConfig {
   buttonText?: string;
   contactMessage?: string;
   welcomeMessage?: string;
-  paymentApiKey?: string; // Added for Payment Gateway
+  paymentApiKey?: string; // Added field
 }
 
 export interface TelegramLog {

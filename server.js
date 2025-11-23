@@ -47,6 +47,7 @@ async function initDB() {
         productCode VARCHAR(50),
         name VARCHAR(255),
         price DECIMAL(15,0),
+        itemsPerPackage INT DEFAULT 1,
         category VARCHAR(255),
         description TEXT,
         imageUrl LONGTEXT,
@@ -91,6 +92,8 @@ async function initDB() {
       await pool.query(sql);
     }
     
+    // Schema Migration
+    try { await pool.query("ALTER TABLE products ADD COLUMN itemsPerPackage INT DEFAULT 1"); } catch (e) {}
     try { await pool.query("ALTER TABLE orders ADD COLUMN customerAddress TEXT"); } catch (e) {}
 
     const [rows] = await pool.query('SELECT * FROM users WHERE username = ?', ['admin']);
@@ -132,8 +135,9 @@ app.get('/api/products', checkDB, async (req, res) => {
 });
 app.post('/api/products', checkDB, async (req, res) => {
   const p = req.body;
-  await pool.query('INSERT INTO products (id, productCode, name, price, category, description, imageUrl, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE productCode=?, name=?, price=?, category=?, description=?, imageUrl=?',
-  [p.id, p.productCode, p.name, p.price, p.category, p.description, p.imageUrl, p.createdAt, p.productCode, p.name, p.price, p.category, p.description, p.imageUrl]);
+  const itemsPerPackage = p.itemsPerPackage || 1;
+  await pool.query('INSERT INTO products (id, productCode, name, price, itemsPerPackage, category, description, imageUrl, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE productCode=?, name=?, price=?, itemsPerPackage=?, category=?, description=?, imageUrl=?',
+  [p.id, p.productCode, p.name, p.price, itemsPerPackage, p.category, p.description, p.imageUrl, p.createdAt, p.productCode, p.name, p.price, itemsPerPackage, p.category, p.description, p.imageUrl]);
   res.json({ success: true });
 });
 app.delete('/api/products/:id', checkDB, async (req, res) => {
@@ -266,9 +270,9 @@ async function runBot() {
             const filtered = products.filter(p => p.name.toLowerCase().includes(query) || (p.productCode && p.productCode.toLowerCase().includes(query))).slice(0, 20);
             const results = filtered.map(p => ({
                 type: 'article', id: p.id, title: p.name,
-                description: `کد: ${p.productCode || '-'} | ${Number(p.price).toLocaleString()} تومان`,
+                description: `کد: ${p.productCode || '-'} | 📦 بسته: ${p.itemsPerPackage || 1} عدد | ${Number(p.price).toLocaleString()} تومان`,
                 thumb_url: p.imageUrl || 'https://via.placeholder.com/100',
-                input_message_content: { message_text: `🛍 *${p.name}*\n🔢 کد: ${p.productCode}\n💵 ${Number(p.price).toLocaleString()} تومان\n\n📝 ${p.description}`, parse_mode: 'Markdown' },
+                input_message_content: { message_text: `🛍 *${p.name}*\n🔢 کد: ${p.productCode}\n📦 تعداد در بسته: ${p.itemsPerPackage || 1} عدد\n💵 قیمت: ${Number(p.price).toLocaleString()} تومان\n\n📝 ${p.description}`, parse_mode: 'Markdown' },
                 reply_markup: { inline_keyboard: [[{ text: "🛒 خرید", callback_data: `order_${p.id}` }]] }
             }));
             await fetch(`${TG_BASE}${config.botToken}/answerInlineQuery`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ inline_query_id: update.inline_query.id, results, cache_time: 1 }) });
@@ -292,7 +296,6 @@ async function runBot() {
             if (data.startsWith('order_')) {
                 const pid = data.split('_')[1];
                 const product = products.find(p => p.id === pid);
-                
                 if (!product) {
                     await sendMsg(chatId, "❌ محصول یافت نشد.");
                 } else {
@@ -300,13 +303,13 @@ async function runBot() {
                         step: 'AWAITING_NAME',
                         tempOrder: { productId: pid, productName: product.name, productPrice: product.price, customerName: '', customerAddress: '', customerPhone: '' }
                     };
-                    await sendMsg(chatId, `📝 *ثبت سفارش جدید*\nمحصول: ${product.name}\n\nلطفاً *نام و نام خانوادگی* خود را وارد کنید:`, cancelOrderBtn);
+                    await sendMsg(chatId, `📝 *ثبت سفارش جدید*\nمحصول: ${product.name}\n📦 بسته: ${product.itemsPerPackage || 1} عدد\n\nلطفاً *نام و نام خانوادگی* خود را وارد کنید:`, cancelOrderBtn);
                 }
             }
 
             else if (data === 'cmd_products') {
                 if (categories.length === 0) {
-                     const productButtons = products.slice(0, 20).map(p => ([{ text: `${p.name} - ${Number(p.price).toLocaleString()}`, callback_data: `prod_${p.id}` }]));
+                     const productButtons = products.slice(0, 20).map(p => ([{ text: `${p.name}`, callback_data: `prod_${p.id}` }]));
                     productButtons.push([{ text: "🔙 بازگشت", callback_data: "cmd_start" }]);
                     await sendMsg(chatId, "🛍 *محصولات:*", { inline_keyboard: productButtons });
                 } else {
@@ -319,7 +322,7 @@ async function runBot() {
                 const catId = data.split('_')[1];
                 const category = categories.find(c => c.id === catId);
                 const filteredProducts = products.filter(p => p.category === catId);
-                const productButtons = filteredProducts.slice(0, 20).map(p => ([{ text: `${p.name} - ${Number(p.price).toLocaleString()} ت`, callback_data: `prod_${p.id}` }]));
+                const productButtons = filteredProducts.slice(0, 20).map(p => ([{ text: `${p.name}`, callback_data: `prod_${p.id}` }]));
                 productButtons.push([{ text: "🔙 بازگشت", callback_data: "cmd_products" }]);
                 await sendMsg(chatId, `📂 دسته: *${category?.name}*`, { inline_keyboard: productButtons });
             }
@@ -327,7 +330,7 @@ async function runBot() {
                 const pid = data.split('_')[1];
                 const product = products.find(p => p.id === pid);
                 if (product) {
-                    const caption = `🛍 *${product.name}*\n🔢 کد: ${product.productCode || '---'}\n📂 دسته: ${getCatName(product.category)}\n💵 ${Number(product.price).toLocaleString()} تومان\n\n📝 ${product.description}`;
+                    const caption = `🛍 *${product.name}*\n🔢 کد: ${product.productCode || '---'}\n📦 تعداد در بسته: ${product.itemsPerPackage || 1} عدد\n📂 دسته: ${getCatName(product.category)}\n💵 قیمت: ${Number(product.price).toLocaleString()} تومان\n\n📝 ${product.description}`;
                     const itemMarkup = { inline_keyboard: [[{ text: "🛒 ثبت سفارش", callback_data: `order_${product.id}` }], [{ text: "🔙 بازگشت", callback_data: `cat_${product.category}` }]] };
                     if (product.imageUrl && product.imageUrl.startsWith('data:')) {
                         const buffer = dataURItoBuffer(product.imageUrl);
@@ -337,52 +340,44 @@ async function runBot() {
                 }
             }
             else if (data === 'cmd_start') await sendMsg(chatId, "🏠 *منوی اصلی*", mainMenuInline);
-            
             continue;
         }
 
-        // 3. TEXT MESSAGES
+        // TEXT MESSAGES
         if (update.message) {
             const chatId = update.message.chat.id;
             const userId = update.message.from.id;
             const text = update.message.text;
             
-            // --- ORDER WIZARD ---
             if (userSessions[chatId]) {
                 const session = userSessions[chatId];
-
                 if (text && (text === '/start' || text === '❌ لغو سفارش')) {
                     delete userSessions[chatId];
                     await sendMsg(chatId, "❌ سفارش لغو شد.", mainMenuInline);
                     continue;
                 }
-
-                // STEP 1: Name
                 if (session.step === 'AWAITING_NAME') {
-                    if (!text) { await sendMsg(chatId, "⚠️ لطفا نام را به صورت متن وارد کنید:"); continue; }
+                    if (!text) { await sendMsg(chatId, "⚠️ نام را وارد کنید:"); continue; }
                     session.tempOrder.customerName = text;
                     session.step = 'AWAITING_ADDRESS';
-                    await sendMsg(chatId, `✅ نام ثبت شد: ${text}\n\n📍 لطفاً *آدرس دقیق* خود را وارد کنید:`, cancelOrderBtn);
+                    await sendMsg(chatId, `✅ نام: ${text}\n\n📍 لطفاً *آدرس* خود را وارد کنید:`, cancelOrderBtn);
                 }
-                // STEP 2: Address (Fixed to accept any text properly)
                 else if (session.step === 'AWAITING_ADDRESS') {
-                    if (!text) { await sendMsg(chatId, "⚠️ لطفا آدرس را به صورت متن وارد کنید:"); continue; }
+                    // FIX: Allow any text as address, do not force format
+                    if (!text) { await sendMsg(chatId, "⚠️ آدرس را وارد کنید:"); continue; }
                     session.tempOrder.customerAddress = text;
                     session.step = 'AWAITING_PHONE';
-                    
                     const [vUsers] = await pool.query('SELECT phoneNumber FROM verified_users WHERE userId = ?', [userId]);
                     if (vUsers.length > 0) {
-                        // Auto-finish with saved phone
                         await finalizeOrder(chatId, session, vUsers[0].phoneNumber, config);
                     } else {
                         await sendMsg(chatId, `✅ آدرس ثبت شد.\n\n📞 لطفاً *شماره تماس* خود را وارد کنید:`, { keyboard: [[{text: "📱 ارسال شماره", request_contact: true}]], resize_keyboard: true, one_time_keyboard: true });
                     }
                 }
-                // STEP 3: Phone
                 else if (session.step === 'AWAITING_PHONE') {
                     let phone = text;
                     if (update.message.contact) phone = update.message.contact.phone_number;
-                    if (!phone) { await sendMsg(chatId, "لطفا شماره معتبر وارد کنید:"); continue; }
+                    if (!phone) { await sendMsg(chatId, "شماره معتبر نیست!"); continue; }
                     await finalizeOrder(chatId, session, phone, config);
                 }
                 continue;
@@ -394,11 +389,10 @@ async function runBot() {
                 await pool.query('INSERT INTO verified_users VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE phoneNumber=?', [u.id, u.first_name, u.last_name, u.username, ph, Date.now(), ph]); 
                 await sendMsg(chatId, `✅ تایید شد. خوش آمدید.`, mainMenuInline);
             }
-            
             else if (text === '/start') {
                 const [verifiedRows] = await pool.query('SELECT * FROM verified_users WHERE userId = ?', [userId]);
                 if (verifiedRows.length > 0) await sendMsg(chatId, `👋 سلام! خوش آمدید.`, mainMenuInline);
-                else await sendMsg(chatId, `👋 برای استفاده لطفا شماره خود را تایید کنید.`, contactMenu);
+                else await sendMsg(chatId, `👋 لطفا شماره خود را تایید کنید.`, contactMenu);
             }
         }
     }
@@ -424,10 +418,9 @@ async function finalizeOrder(chatId, session, phone, config) {
 
         delete userSessions[chatId];
         
-        // Payment Link Generation
         let paymentButton = [];
         if (config.paymentApiKey) {
-            // Simulated Payment Link (In real app, create transaction via API)
+            // Fake Payment Link
             const paymentUrl = `https://example.com/pay?order=${orderId}&amount=${order.totalAmount}`; 
             paymentButton = [[{ text: "💳 پرداخت آنلاین", url: paymentUrl }]];
         }
@@ -444,7 +437,7 @@ async function finalizeOrder(chatId, session, phone, config) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 chat_id: chatId,
-                text: `🎉 *سفارش شما با موفقیت ثبت شد!* \n\n🧾 شماره پیگیری: \`${orderId}\`\n📦 محصول: ${session.tempOrder.productName}\n💰 مبلغ: ${Number(order.totalAmount).toLocaleString()} تومان\n\n📍 آدرس: ${order.customerAddress}\n\n${config.paymentApiKey ? 'جهت تکمیل خرید روی دکمه پرداخت کلیک کنید.' : 'همکاران ما جهت هماهنگی با شما تماس خواهند گرفت.'}`,
+                text: `🎉 *سفارش ثبت شد!*\n\n🧾 کد: \`${orderId}\`\n📦 محصول: ${session.tempOrder.productName}\n💰 مبلغ: ${Number(order.totalAmount).toLocaleString()} تومان\n📍 آدرس: ${order.customerAddress}\n\n${config.paymentApiKey ? 'جهت تکمیل خرید روی دکمه پرداخت کلیک کنید.' : 'همکاران ما تماس خواهند گرفت.'}`,
                 parse_mode: 'Markdown',
                 reply_markup: successMarkup
             })

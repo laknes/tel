@@ -14,6 +14,7 @@ export const ProductForm: React.FC<ProductFormProps> = ({ categories, onSave, on
   const [name, setName] = useState(editingProduct?.name || '');
   const [productCode, setProductCode] = useState(editingProduct?.productCode || '');
   const [price, setPrice] = useState<number | string>(editingProduct?.price || '');
+  const [itemsPerPackage, setItemsPerPackage] = useState<number | string>(editingProduct?.itemsPerPackage || 1);
   const [category, setCategory] = useState(editingProduct?.category || (categories[0]?.id || ''));
   const [description, setDescription] = useState(editingProduct?.description || '');
   const [imageUrl, setImageUrl] = useState(editingProduct?.imageUrl || '');
@@ -27,7 +28,6 @@ export const ProductForm: React.FC<ProductFormProps> = ({ categories, onSave, on
       alert('لطفا یک فایل تصویر انتخاب کنید.');
       return;
     }
-    // Simple size check (e.g., 2MB limit)
     if (file.size > 2 * 1024 * 1024) {
       alert('حجم تصویر باید کمتر از ۲ مگابایت باشد.');
       return;
@@ -94,6 +94,7 @@ export const ProductForm: React.FC<ProductFormProps> = ({ categories, onSave, on
       productCode,
       name,
       price: Number(price),
+      itemsPerPackage: Number(itemsPerPackage) || 1,
       category,
       description,
       imageUrl,
@@ -190,8 +191,8 @@ export const ProductForm: React.FC<ProductFormProps> = ({ categories, onSave, on
           </div>
         </div>
         
-        {/* Price and Category */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Price and Category and ItemsPerPackage */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">قیمت (تومان)</label>
             <input
@@ -201,6 +202,18 @@ export const ProductForm: React.FC<ProductFormProps> = ({ categories, onSave, on
               className="w-full px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-brand-500 focus:border-transparent outline-none transition-all"
               placeholder="مثال: 150000"
               required
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">تعداد در بسته</label>
+            <input
+              type="number"
+              value={itemsPerPackage}
+              onChange={(e) => setItemsPerPackage(e.target.value)}
+              className="w-full px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-brand-500 focus:border-transparent outline-none transition-all"
+              placeholder="1"
+              min="1"
             />
           </div>
 
