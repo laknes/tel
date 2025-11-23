@@ -11,7 +11,8 @@ export const TelegramConfigPanel: React.FC = () => {
     chatId: '',
     supportId: '',
     buttonText: '🛒 ثبت سفارش',
-    contactMessage: '📞 راه های ارتباطی:\n\n🆔 پشتیبانی: @admin\n📱 تلفن: 09120000000'
+    contactMessage: '📞 راه های ارتباطی:\n\n🆔 پشتیبانی: @admin\n📱 تلفن: 09120000000',
+    paymentApiKey: ''
   });
   const [status, setStatus] = useState<'idle' | 'saved'>('idle');
   const [botInfo, setBotInfo] = useState<BotInfo | null>(null);
@@ -31,7 +32,8 @@ export const TelegramConfigPanel: React.FC = () => {
         if (saved) setConfig({
             ...saved,
             buttonText: saved.buttonText || '🛒 ثبت سفارش',
-            contactMessage: saved.contactMessage || '📞 راه های ارتباطی:\n\n🆔 پشتیبانی: @admin\n📱 تلفن: 09120000000'
+            contactMessage: saved.contactMessage || '📞 راه های ارتباطی:\n\n🆔 پشتیبانی: @admin\n📱 تلفن: 09120000000',
+            paymentApiKey: saved.paymentApiKey || ''
         });
         setLogs(StorageService.getTelegramLogs());
         setVerifiedUsers(await StorageService.getVerifiedUsers());
@@ -170,6 +172,18 @@ export const TelegramConfigPanel: React.FC = () => {
                      dir="ltr" 
                    />
                 </div>
+              </div>
+
+              <div className="mb-6">
+                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">API Key درگاه پرداخت (اختیاری)</label>
+                   <input 
+                     type="text" 
+                     value={config.paymentApiKey || ''} 
+                     onChange={(e) => setConfig({ ...config, paymentApiKey: e.target.value })} 
+                     placeholder="مثال: زرین پال یا ..." 
+                     className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-brand-500 outline-none text-left font-mono" 
+                     dir="ltr" 
+                   />
               </div>
 
               <div>

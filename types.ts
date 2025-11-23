@@ -1,3 +1,4 @@
+
 export interface Product {
   id: string;
   productCode: string;
@@ -21,6 +22,7 @@ export interface TelegramConfig {
   buttonText?: string;
   contactMessage?: string;
   welcomeMessage?: string;
+  paymentApiKey?: string; // Added for Payment Gateway
 }
 
 export interface TelegramLog {
@@ -75,7 +77,7 @@ export interface Order {
   id: string;
   customerName: string;
   customerPhone?: string;
-  customerAddress?: string; // Added Address field
+  customerAddress?: string;
   totalAmount: number;
   status: OrderStatus;
   items: OrderItem[];

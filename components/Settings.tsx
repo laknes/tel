@@ -6,7 +6,7 @@ import { getBotInfo, getChannelInfo, sendContactRequest, checkUpdatesForContacts
 
 export const Settings: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'config' | 'status' | 'verification' | 'logs' | 'database'>('config');
-  const [config, setConfig] = useState<TelegramConfig>({ botToken: '', chatId: '', supportId: '', buttonText: '🛒 ثبت سفارش', contactMessage: '', welcomeMessage: '' });
+  const [config, setConfig] = useState<TelegramConfig>({ botToken: '', chatId: '', supportId: '', buttonText: '🛒 ثبت سفارش', contactMessage: '', welcomeMessage: '', paymentApiKey: '' });
   const [status, setStatus] = useState<'idle' | 'saved'>('idle');
   const [botInfo, setBotInfo] = useState<BotInfo | null>(null);
   const [channelName, setChannelName] = useState<string>('');
@@ -27,7 +27,8 @@ export const Settings: React.FC = () => {
           ...saved,
           buttonText: saved.buttonText || '🛒 ثبت سفارش',
           contactMessage: saved.contactMessage || '📞 راه های ارتباطی:\n\n🆔 پشتیبانی: @admin\n📱 تلفن: 09120000000',
-          welcomeMessage: saved.welcomeMessage || ''
+          welcomeMessage: saved.welcomeMessage || '',
+          paymentApiKey: saved.paymentApiKey || ''
       });
       setLogs(StorageService.getTelegramLogs());
       setVerifiedUsers(await StorageService.getVerifiedUsers());
@@ -39,9 +40,6 @@ export const Settings: React.FC = () => {
     setStatus('saved');
     setTimeout(() => setStatus('idle'), 3000);
   };
-
-  // ... (Rest of the component remains mostly same, methods are already async compatible or independent)
-  // Copied minimal necessary parts for brevity since most UI is identical
 
   const checkConnection = async () => {
     setIsLoading(true);
@@ -103,17 +101,20 @@ export const Settings: React.FC = () => {
         {activeTab === 'config' && (
           <form onSubmit={handleSaveConfig} className="space-y-6 max-w-2xl mx-auto">
             <div className="grid grid-cols-1 gap-6">
-              <div><label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">توکن ربات</label><input type="text" value={config.botToken} onChange={(e) => setConfig({ ...config, botToken: e.target.value })} className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white outline-none text-left font-mono" dir="ltr" /></div>
-              <div><label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">شناسه کانال</label><input type="text" value={config.chatId} onChange={(e) => setConfig({ ...config, chatId: e.target.value })} className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white outline-none text-left font-mono" dir="ltr" /></div>
+              <div><label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">توکن ربات (Bot Token)</label><input type="text" value={config.botToken} onChange={(e) => setConfig({ ...config, botToken: e.target.value })} className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white outline-none text-left font-mono" dir="ltr" /></div>
+              <div><label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">شناسه کانال (Chat ID)</label><input type="text" value={config.chatId} onChange={(e) => setConfig({ ...config, chatId: e.target.value })} className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white outline-none text-left font-mono" dir="ltr" /></div>
             </div>
             
             <div className="pt-6 border-t border-gray-100 dark:border-gray-700">
+              <h3 className="text-md font-bold mb-4 text-gray-800 dark:text-white">تنظیمات پیشرفته</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-4">
                 <div><label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">متن دکمه خرید</label><input type="text" value={config.buttonText} onChange={(e) => setConfig({ ...config, buttonText: e.target.value })} className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white outline-none" /></div>
                 <div><label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">آیدی پشتیبانی</label><input type="text" value={config.supportId || ''} onChange={(e) => setConfig({ ...config, supportId: e.target.value })} className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white outline-none text-left font-mono" dir="ltr" /></div>
               </div>
+              <div className="mb-4"><label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">API Key درگاه پرداخت (اختیاری)</label><input type="text" value={config.paymentApiKey || ''} onChange={(e) => setConfig({ ...config, paymentApiKey: e.target.value })} placeholder="مثال: زرین پال یا ..." className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white outline-none text-left font-mono" dir="ltr" /></div>
+              
               <div><label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">پیام دکمه "ارتباط با ما"</label><textarea rows={3} value={config.contactMessage || ''} onChange={(e) => setConfig({ ...config, contactMessage: e.target.value })} className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white outline-none" /></div>
-              <div className="mt-4"><label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">پیام خوش‌آمدگویی</label><textarea rows={3} value={config.welcomeMessage || ''} onChange={(e) => setConfig({ ...config, welcomeMessage: e.target.value })} className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white outline-none" /></div>
+              <div className="mt-4"><label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">پیام خوش‌آمدگویی پنل</label><textarea rows={3} value={config.welcomeMessage || ''} onChange={(e) => setConfig({ ...config, welcomeMessage: e.target.value })} className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white outline-none" /></div>
             </div>
 
             <div className="flex items-center justify-between pt-4">

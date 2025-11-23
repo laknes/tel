@@ -1,3 +1,4 @@
+
 import express from 'express';
 import mysql from 'mysql2/promise';
 import cors from 'cors';
@@ -90,12 +91,7 @@ async function initDB() {
       await pool.query(sql);
     }
     
-    // Migration for existing databases
-    try {
-        await pool.query("ALTER TABLE orders ADD COLUMN customerAddress TEXT");
-    } catch (e) { 
-        // Ignore if column exists
-    }
+    try { await pool.query("ALTER TABLE orders ADD COLUMN customerAddress TEXT"); } catch (e) {}
 
     const [rows] = await pool.query('SELECT * FROM users WHERE username = ?', ['admin']);
     if (rows.length === 0) {
@@ -190,12 +186,9 @@ app.post('/api/verified-users', checkDB, async (req, res) => {
   res.json({ success: true });
 });
 
-// --- TELEGRAM BOT LOGIC (SERVER SIDE) ---
+// --- TELEGRAM BOT LOGIC ---
 const TG_BASE = 'https://api.telegram.org/bot';
 let lastUpdateId = 0;
-
-// --- ORDER WIZARD SESSION STORAGE ---
-// Stores state: { step: 'NAME'|'ADDRESS'|'PHONE', tempOrder: {...} }
 const userSessions = {};
 
 const dataURItoBuffer = (dataURI) => {
@@ -210,25 +203,21 @@ const dataURItoBuffer = (dataURI) => {
 async function runBot() {
   if (!pool) return;
   try {
-    // 1. Get Config
     const [configRows] = await pool.query('SELECT data FROM configs WHERE id = ?', ['telegram']);
     if (configRows.length === 0) return;
     const config = typeof configRows[0].data === 'string' ? JSON.parse(configRows[0].data) : configRows[0].data;
     if (!config || !config.botToken) return;
 
-    // 2. Get Updates
     const offset = lastUpdateId + 1;
     const res = await fetch(`${TG_BASE}${config.botToken}/getUpdates?offset=${offset}&limit=50&timeout=0`);
     const data = await res.json();
 
     if (!data.ok || !data.result || data.result.length === 0) return;
 
-    // 3. Load Data
     const [products] = await pool.query('SELECT * FROM products');
     const [categories] = await pool.query('SELECT * FROM categories');
     const getCatName = (id) => categories.find(c => c.id === id)?.name || 'عمومی';
 
-    // Helpers
     const sendMsg = async (chatId, text, markup = null) => {
         const body = { chat_id: chatId, text, parse_mode: 'Markdown' };
         if (markup) body.reply_markup = markup;
@@ -252,10 +241,9 @@ async function runBot() {
         await fetch(`${TG_BASE}${config.botToken}/answerCallbackQuery`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
     };
 
-    // Keyboards
     const mainMenuInline = {
         inline_keyboard: [
-            [{ text: "🛍 لیست محصولات", callback_data: "cmd_products" }, { text: "🔍 جستجو", callback_data: "cmd_search" }],
+            [{ text: "🛍 محصولات", callback_data: "cmd_products" }, { text: "🔍 جستجو", callback_data: "cmd_search" }],
             [{ text: "📞 ارتباط با ما", callback_data: "cmd_contact" }, { text: "ℹ️ راهنما", callback_data: "cmd_help" }]
         ]
     };
@@ -269,11 +257,10 @@ async function runBot() {
         inline_keyboard: [[{ text: "❌ لغو سفارش", callback_data: "cmd_cancel_order" }]]
     };
 
-    // PROCESS UPDATES
     for (const update of data.result) {
         if (update.update_id > lastUpdateId) lastUpdateId = update.update_id;
 
-        // 1. INLINE QUERY (Search Bar)
+        // 1. INLINE QUERY
         if (update.inline_query) {
             const query = update.inline_query.query.toLowerCase();
             const filtered = products.filter(p => p.name.toLowerCase().includes(query) || (p.productCode && p.productCode.toLowerCase().includes(query))).slice(0, 20);
@@ -284,10 +271,7 @@ async function runBot() {
                 input_message_content: { message_text: `🛍 *${p.name}*\n🔢 کد: ${p.productCode}\n💵 ${Number(p.price).toLocaleString()} تومان\n\n📝 ${p.description}`, parse_mode: 'Markdown' },
                 reply_markup: { inline_keyboard: [[{ text: "🛒 خرید", callback_data: `order_${p.id}` }]] }
             }));
-            await fetch(`${TG_BASE}${config.botToken}/answerInlineQuery`, {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ inline_query_id: update.inline_query.id, results, cache_time: 1 })
-            });
+            await fetch(`${TG_BASE}${config.botToken}/answerInlineQuery`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ inline_query_id: update.inline_query.id, results, cache_time: 1 }) });
             continue;
         }
 
@@ -299,52 +283,35 @@ async function runBot() {
 
             await answerCallback(cb.id);
 
-            // --- ORDER CANCELLATION ---
             if (data === 'cmd_cancel_order') {
-                if (userSessions[chatId]) {
-                    delete userSessions[chatId];
-                    await sendMsg(chatId, "❌ فرآیند ثبت سفارش لغو شد.", mainMenuInline);
-                }
+                delete userSessions[chatId];
+                await sendMsg(chatId, "❌ سفارش لغو شد.", mainMenuInline);
                 continue;
             }
 
-            // --- ORDER START (Start the Wizard) ---
             if (data.startsWith('order_')) {
                 const pid = data.split('_')[1];
                 const product = products.find(p => p.id === pid);
                 
                 if (!product) {
-                    await sendMsg(chatId, "❌ متاسفانه این محصول یافت نشد یا حذف شده است.");
+                    await sendMsg(chatId, "❌ محصول یافت نشد.");
                 } else {
-                    // Initialize Session
                     userSessions[chatId] = {
                         step: 'AWAITING_NAME',
-                        tempOrder: {
-                            productId: pid,
-                            productName: product.name,
-                            productPrice: product.price,
-                            customerName: '',
-                            customerAddress: '',
-                            customerPhone: ''
-                        }
+                        tempOrder: { productId: pid, productName: product.name, productPrice: product.price, customerName: '', customerAddress: '', customerPhone: '' }
                     };
                     await sendMsg(chatId, `📝 *ثبت سفارش جدید*\nمحصول: ${product.name}\n\nلطفاً *نام و نام خانوادگی* خود را وارد کنید:`, cancelOrderBtn);
                 }
             }
 
-            // --- NAVIGATION & MENUS ---
             else if (data === 'cmd_products') {
                 if (categories.length === 0) {
-                     const productButtons = products.slice(0, 20).map(p => ([
-                        { text: `${p.name} - ${Number(p.price).toLocaleString()}`, callback_data: `prod_${p.id}` }
-                    ]));
+                     const productButtons = products.slice(0, 20).map(p => ([{ text: `${p.name} - ${Number(p.price).toLocaleString()}`, callback_data: `prod_${p.id}` }]));
                     productButtons.push([{ text: "🔙 بازگشت", callback_data: "cmd_start" }]);
                     await sendMsg(chatId, "🛍 *محصولات:*", { inline_keyboard: productButtons });
                 } else {
-                    const catButtons = categories.map(c => ([
-                        { text: `📂 ${c.name}`, callback_data: `cat_${c.id}` }
-                    ]));
-                    catButtons.push([{ text: "🔙 بازگشت به منو", callback_data: "cmd_start" }]);
+                    const catButtons = categories.map(c => ([{ text: `📂 ${c.name}`, callback_data: `cat_${c.id}` }]));
+                    catButtons.push([{ text: "🔙 بازگشت", callback_data: "cmd_start" }]);
                     await sendMsg(chatId, "🗂 *انتخاب دسته بندی:*", { inline_keyboard: catButtons });
                 }
             } 
@@ -352,60 +319,35 @@ async function runBot() {
                 const catId = data.split('_')[1];
                 const category = categories.find(c => c.id === catId);
                 const filteredProducts = products.filter(p => p.category === catId);
-                
-                const productButtons = filteredProducts.slice(0, 20).map(p => ([
-                    { text: `${p.name} - ${Number(p.price).toLocaleString()} ت`, callback_data: `prod_${p.id}` }
-                ]));
+                const productButtons = filteredProducts.slice(0, 20).map(p => ([{ text: `${p.name} - ${Number(p.price).toLocaleString()} ت`, callback_data: `prod_${p.id}` }]));
                 productButtons.push([{ text: "🔙 بازگشت", callback_data: "cmd_products" }]);
-                
                 await sendMsg(chatId, `📂 دسته: *${category?.name}*`, { inline_keyboard: productButtons });
             }
             else if (data.startsWith('prod_')) {
                 const pid = data.split('_')[1];
                 const product = products.find(p => p.id === pid);
                 if (product) {
-                    const caption = `
-🛍 *${product.name}*
-🔢 *کد:* ${product.productCode || '---'}
-📂 *دسته:* ${getCatName(product.category)}
-💵 *قیمت:* ${Number(product.price).toLocaleString()} تومان
-
-📝 *توضیحات:*
-${product.description}
-                    `.trim();
-
-                    // Button triggers internal logic
-                    const itemMarkup = {
-                        inline_keyboard: [
-                            [{ text: "🛒 ثبت سفارش (پرداخت درب منزل)", callback_data: `order_${product.id}` }],
-                            [{ text: "🔙 بازگشت", callback_data: `cat_${product.category}` }]
-                        ]
-                    };
-
+                    const caption = `🛍 *${product.name}*\n🔢 کد: ${product.productCode || '---'}\n📂 دسته: ${getCatName(product.category)}\n💵 ${Number(product.price).toLocaleString()} تومان\n\n📝 ${product.description}`;
+                    const itemMarkup = { inline_keyboard: [[{ text: "🛒 ثبت سفارش", callback_data: `order_${product.id}` }], [{ text: "🔙 بازگشت", callback_data: `cat_${product.category}` }]] };
                     if (product.imageUrl && product.imageUrl.startsWith('data:')) {
                         const buffer = dataURItoBuffer(product.imageUrl);
                         if (buffer) await sendPhoto(chatId, buffer, caption, itemMarkup);
                         else await sendMsg(chatId, caption, itemMarkup);
-                    } else if (product.imageUrl) {
-                         await sendMsg(chatId, caption + `\n\n🖼 [تصویر](${product.imageUrl})`, itemMarkup);
-                    } else {
-                        await sendMsg(chatId, caption, itemMarkup);
-                    }
+                    } else await sendMsg(chatId, caption, itemMarkup);
                 }
             }
-            else if (data === 'cmd_start') {
-                await sendMsg(chatId, "🏠 *منوی اصلی*", mainMenuInline);
-            }
+            else if (data === 'cmd_start') await sendMsg(chatId, "🏠 *منوی اصلی*", mainMenuInline);
+            
             continue;
         }
 
-        // 3. TEXT MESSAGES & WIZARD HANDLING
+        // 3. TEXT MESSAGES
         if (update.message) {
             const chatId = update.message.chat.id;
             const userId = update.message.from.id;
             const text = update.message.text;
             
-            // --- ORDER WIZARD HANDLER ---
+            // --- ORDER WIZARD ---
             if (userSessions[chatId]) {
                 const session = userSessions[chatId];
 
@@ -415,80 +357,55 @@ ${product.description}
                     continue;
                 }
 
-                // Step 1: Receive Name
+                // STEP 1: Name
                 if (session.step === 'AWAITING_NAME') {
-                    if (!text) { await sendMsg(chatId, "لطفا نام خود را به صورت متن وارد کنید:"); continue; }
+                    if (!text) { await sendMsg(chatId, "⚠️ لطفا نام را به صورت متن وارد کنید:"); continue; }
                     session.tempOrder.customerName = text;
                     session.step = 'AWAITING_ADDRESS';
-                    await sendMsg(chatId, `✅ نام ثبت شد: ${text}\n\n📍 حالا لطفا *آدرس دقیق پستی* خود را وارد کنید:`, cancelOrderBtn);
+                    await sendMsg(chatId, `✅ نام ثبت شد: ${text}\n\n📍 لطفاً *آدرس دقیق* خود را وارد کنید:`, cancelOrderBtn);
                 }
-                // Step 2: Receive Address
+                // STEP 2: Address (Fixed to accept any text properly)
                 else if (session.step === 'AWAITING_ADDRESS') {
-                    if (!text) { await sendMsg(chatId, "لطفا آدرس را به صورت متن وارد کنید:"); continue; }
+                    if (!text) { await sendMsg(chatId, "⚠️ لطفا آدرس را به صورت متن وارد کنید:"); continue; }
                     session.tempOrder.customerAddress = text;
                     session.step = 'AWAITING_PHONE';
                     
-                    // Check if user verified before to auto-fill phone
                     const [vUsers] = await pool.query('SELECT phoneNumber FROM verified_users WHERE userId = ?', [userId]);
-                    
                     if (vUsers.length > 0) {
-                        // Auto-complete with known phone
-                        const phone = vUsers[0].phoneNumber;
-                        await finalizeOrder(chatId, session, phone);
+                        // Auto-finish with saved phone
+                        await finalizeOrder(chatId, session, vUsers[0].phoneNumber, config);
                     } else {
-                        // Ask for phone
-                        await sendMsg(chatId, `✅ آدرس ثبت شد.\n\n📞 لطفا *شماره تماس* خود را وارد کنید (یا دکمه ارسال شماره را بزنید):`, 
-                             { keyboard: [[{text: "📱 ارسال شماره تلفن", request_contact: true}]], resize_keyboard: true, one_time_keyboard: true }
-                        );
+                        await sendMsg(chatId, `✅ آدرس ثبت شد.\n\n📞 لطفاً *شماره تماس* خود را وارد کنید:`, { keyboard: [[{text: "📱 ارسال شماره", request_contact: true}]], resize_keyboard: true, one_time_keyboard: true });
                     }
                 }
-                // Step 3: Receive Phone (Text or Contact Object)
+                // STEP 3: Phone
                 else if (session.step === 'AWAITING_PHONE') {
                     let phone = text;
-                    if (update.message.contact) {
-                        phone = update.message.contact.phone_number;
-                    }
-
+                    if (update.message.contact) phone = update.message.contact.phone_number;
                     if (!phone) { await sendMsg(chatId, "لطفا شماره معتبر وارد کنید:"); continue; }
-                    
-                    await finalizeOrder(chatId, session, phone);
+                    await finalizeOrder(chatId, session, phone, config);
                 }
                 continue;
             }
 
-            // --- NORMAL FLOW ---
-            
-            // Handle Contact Share (Verification)
             if (update.message.contact && update.message.contact.user_id === userId) {
                 const u = update.message.from;
                 const ph = update.message.contact.phone_number;
-                await pool.query('INSERT INTO verified_users VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE phoneNumber=?', 
-                [u.id, u.first_name, u.last_name, u.username, ph, Date.now(), ph]); 
-                await sendMsg(chatId, `✅ *هویت تایید شد!*\nخوش آمدید.`, mainMenuInline);
+                await pool.query('INSERT INTO verified_users VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE phoneNumber=?', [u.id, u.first_name, u.last_name, u.username, ph, Date.now(), ph]); 
+                await sendMsg(chatId, `✅ تایید شد. خوش آمدید.`, mainMenuInline);
             }
             
-            // Handle Commands & Text
-            else if (update.message.text) {
-                const t = update.message.text.toLowerCase().trim();
-                
-                if (t === '/start') {
-                    const [verifiedRows] = await pool.query('SELECT * FROM verified_users WHERE userId = ?', [userId]);
-                    if (verifiedRows.length > 0) {
-                        await sendMsg(chatId, `👋 سلام ${update.message.from.first_name} عزیز!\nخوش آمدید.`, mainMenuInline);
-                    } else {
-                        await sendMsg(chatId, `👋 سلام!\nبرای استفاده از ربات لطفاً شماره خود را تایید کنید.`, contactMenu);
-                    }
-                }
+            else if (text === '/start') {
+                const [verifiedRows] = await pool.query('SELECT * FROM verified_users WHERE userId = ?', [userId]);
+                if (verifiedRows.length > 0) await sendMsg(chatId, `👋 سلام! خوش آمدید.`, mainMenuInline);
+                else await sendMsg(chatId, `👋 برای استفاده لطفا شماره خود را تایید کنید.`, contactMenu);
             }
         }
     }
-  } catch (e) {
-    // console.error("Bot loop error:", e.message); 
-  }
+  } catch (e) { }
 }
 
-// Helper function to save order to DB
-async function finalizeOrder(chatId, session, phone) {
+async function finalizeOrder(chatId, session, phone, config) {
     const orderId = `ORD-${Date.now().toString().slice(-6)}`;
     const order = {
         id: orderId,
@@ -497,12 +414,7 @@ async function finalizeOrder(chatId, session, phone) {
         customerAddress: session.tempOrder.customerAddress,
         totalAmount: session.tempOrder.productPrice,
         status: 'PENDING',
-        items: [{
-            productId: session.tempOrder.productId,
-            productName: session.tempOrder.productName,
-            quantity: 1,
-            priceAtTime: session.tempOrder.productPrice
-        }],
+        items: [{ productId: session.tempOrder.productId, productName: session.tempOrder.productName, quantity: 1, priceAtTime: session.tempOrder.productPrice }],
         createdAt: Date.now()
     };
 
@@ -512,44 +424,36 @@ async function finalizeOrder(chatId, session, phone) {
 
         delete userSessions[chatId];
         
-        const mainMenuInline = {
+        // Payment Link Generation
+        let paymentButton = [];
+        if (config.paymentApiKey) {
+            // Simulated Payment Link (In real app, create transaction via API)
+            const paymentUrl = `https://example.com/pay?order=${orderId}&amount=${order.totalAmount}`; 
+            paymentButton = [[{ text: "💳 پرداخت آنلاین", url: paymentUrl }]];
+        }
+
+        const successMarkup = {
             inline_keyboard: [
-                [{ text: "🛍 لیست محصولات", callback_data: "cmd_products" }, { text: "🔍 جستجو", callback_data: "cmd_search" }],
-                [{ text: "📞 ارتباط با ما", callback_data: "cmd_contact" }, { text: "ℹ️ راهنما", callback_data: "cmd_help" }]
+                ...paymentButton,
+                [{ text: "🛍 بازگشت به فروشگاه", callback_data: "cmd_products" }]
             ]
         };
-
-        await fetch(`${TG_BASE}${process.env.BOT_TOKEN || ''}/sendMessage`, { // Using existing token from config in loop context actually
-             // Note: In the main loop we have access to 'config.botToken'. Since this is a helper outside, 
-             // we should pass the token or fetch it. For simplicity, let's rely on the main loop context 
-             // or refactor. *Correction*: I'll inline this logic back into the loop or fetch config again.
-             // BETTER APPROACH: Just querying config again inside helper or passing it.
-        });
-        
-        // Re-fetching config for the helper to ensure token availability
-        const [configRows] = await pool.query('SELECT data FROM configs WHERE id = ?', ['telegram']);
-        const config = JSON.parse(configRows[0].data);
 
         await fetch(`${TG_BASE}${config.botToken}/sendMessage`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 chat_id: chatId,
-                text: `🎉 *سفارش شما با موفقیت ثبت شد!* \n\n🧾 شماره پیگیری: \`${orderId}\`\n📦 محصول: ${session.tempOrder.productName}\n📍 آدرس: ${order.customerAddress}\n\nهمکاران ما جهت هماهنگی ارسال با شما تماس خواهند گرفت.`,
+                text: `🎉 *سفارش شما با موفقیت ثبت شد!* \n\n🧾 شماره پیگیری: \`${orderId}\`\n📦 محصول: ${session.tempOrder.productName}\n💰 مبلغ: ${Number(order.totalAmount).toLocaleString()} تومان\n\n📍 آدرس: ${order.customerAddress}\n\n${config.paymentApiKey ? 'جهت تکمیل خرید روی دکمه پرداخت کلیک کنید.' : 'همکاران ما جهت هماهنگی با شما تماس خواهند گرفت.'}`,
                 parse_mode: 'Markdown',
-                reply_markup: mainMenuInline
+                reply_markup: successMarkup
             })
         });
-
-    } catch (e) {
-        console.error("Order Save Error", e);
-    }
+    } catch (e) { console.error("Order Save Error", e); }
 }
 
-// Start Bot Loop
 setInterval(runBot, 2000);
 
-// --- SERVE APP ---
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
