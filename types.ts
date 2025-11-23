@@ -1,4 +1,3 @@
-
 export interface Product {
   id: string;
   productCode: string;
@@ -21,7 +20,7 @@ export interface TelegramConfig {
   supportId?: string;
   buttonText?: string;
   contactMessage?: string;
-  welcomeMessage?: string; // New field for Dashboard Welcome message
+  welcomeMessage?: string;
 }
 
 export interface TelegramLog {
@@ -76,6 +75,7 @@ export interface Order {
   id: string;
   customerName: string;
   customerPhone?: string;
+  customerAddress?: string; // Added Address field
   totalAmount: number;
   status: OrderStatus;
   items: OrderItem[];
