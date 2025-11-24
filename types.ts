@@ -1,4 +1,3 @@
-
 export interface Product {
   id: string;
   productCode: string;
@@ -77,7 +76,7 @@ export interface OrderItem {
 
 export interface ShippingMethod {
   id: string;
-  name: string; // Post, Tipax, Mahnex
+  name: string;
   cost: number;
   estimatedDays: string;
   logo?: string;
@@ -98,16 +97,17 @@ export interface Order {
   customerName: string;
   customerPhone?: string;
   
-  // Detailed Address
-  address: Address;
+  // Detailed Address (can be Address object or string for legacy)
+  address?: Address;
+  customerAddress?: string; // Keep for legacy compatibility
 
   totalAmount: number;
   status: OrderStatus;
   items: OrderItem[];
   
   // Shipping
-  shippingMethod: string;
-  shippingCost: number;
+  shippingMethod?: string;
+  shippingCost?: number;
   
   createdAt: number;
 }

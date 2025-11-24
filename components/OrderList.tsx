@@ -66,7 +66,19 @@ export const OrderList: React.FC<OrderListProps> = ({ orders, onUpdateStatus }) 
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-6">
-        {orders.map((order) => (
+        {orders.map((order) => {
+          // Safe address display logic
+          let displayAddress = 'آدرس ثبت نشده';
+          if (order.address) {
+             displayAddress = typeof order.address === 'string' 
+                ? order.address 
+                : order.address.fullAddress || 'آدرس نامعتبر';
+          } else if ((order as any).customerAddress) {
+             // Fallback for old data
+             displayAddress = (order as any).customerAddress;
+          }
+
+          return (
           <div key={order.id} className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 p-6 transition-colors hover:shadow-md relative overflow-hidden">
             <div className={`absolute top-0 right-0 w-2 h-full ${getStatusColor(order.status).split(' ')[0]}`}></div>
             
@@ -83,8 +95,9 @@ export const OrderList: React.FC<OrderListProps> = ({ orders, onUpdateStatus }) 
                 </h3>
                 <div className="flex flex-col gap-1 mt-2 text-sm text-gray-500 dark:text-gray-400">
                   <span className="flex items-center gap-2">📱 {order.customerPhone || '---'}</span>
-                  <span className="flex items-center gap-2">📍 {order.customerAddress || 'آدرس ثبت نشده'}</span>
+                  <span className="flex items-center gap-2">📍 {displayAddress}</span>
                   <span className="flex items-center gap-2">📅 {new Date(order.createdAt).toLocaleString('fa-IR')}</span>
+                  {order.shippingMethod && <span className="flex items-center gap-2">🚚 {order.shippingMethod}</span>}
                 </div>
               </div>
 
@@ -124,7 +137,8 @@ export const OrderList: React.FC<OrderListProps> = ({ orders, onUpdateStatus }) 
               </div>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
