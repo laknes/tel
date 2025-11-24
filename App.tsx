@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { AppView, Product, Category, Order, OrderStatus, TelegramConfig } from './types';
 import { Sidebar } from './components/Sidebar';
@@ -9,11 +10,29 @@ import { DashboardStats } from './components/DashboardStats';
 import { WelcomeModal } from './components/WelcomeModal';
 import { OrderList } from './components/OrderList';
 import { Auth } from './components/Auth';
+import { StoreCheckout } from './components/StoreCheckout'; // New import
 import { StorageService } from './services/storage';
 import { AuthService } from './services/auth';
 import { sendProductToTelegram } from './services/telegram';
 
 function App() {
+  // --- ROUTING LOGIC ---
+  const [checkoutProductId, setCheckoutProductId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const prodId = params.get('checkout');
+    if (prodId) {
+      setCheckoutProductId(prodId);
+    }
+  }, []);
+
+  // --- RENDER STORE IF CHECKOUT ---
+  if (checkoutProductId) {
+    return <StoreCheckout productId={checkoutProductId} />;
+  }
+
+  // --- ADMIN PANEL LOGIC ---
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [currentView, setCurrentView] = useState<AppView>(AppView.DASHBOARD);
   const [products, setProducts] = useState<Product[]>([]);

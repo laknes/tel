@@ -4,7 +4,7 @@ export interface Product {
   productCode: string;
   name: string;
   price: number;
-  itemsPerPackage?: number; // Added field
+  itemsPerPackage?: number;
   category: string;
   description: string;
   imageUrl: string;
@@ -23,7 +23,7 @@ export interface TelegramConfig {
   buttonText?: string;
   contactMessage?: string;
   welcomeMessage?: string;
-  paymentApiKey?: string; // Added field
+  paymentApiKey?: string;
 }
 
 export interface TelegramLog {
@@ -53,7 +53,8 @@ export interface User {
   username: string;
   password: string;
   fullName: string;
-  role?: 'ADMIN' | 'EDITOR';
+  role?: 'ADMIN' | 'EDITOR' | 'CUSTOMER';
+  phoneNumber?: string;
   isVerified?: boolean;
 }
 
@@ -74,14 +75,40 @@ export interface OrderItem {
   priceAtTime: number;
 }
 
+export interface ShippingMethod {
+  id: string;
+  name: string; // Post, Tipax, Mahnex
+  cost: number;
+  estimatedDays: string;
+  logo?: string;
+}
+
+export interface Address {
+  province: string;
+  city: string;
+  fullAddress: string;
+  plaque: string;
+  unit: string;
+  postalCode: string;
+}
+
 export interface Order {
   id: string;
+  customerId?: string;
   customerName: string;
   customerPhone?: string;
-  customerAddress?: string;
+  
+  // Detailed Address
+  address: Address;
+
   totalAmount: number;
   status: OrderStatus;
   items: OrderItem[];
+  
+  // Shipping
+  shippingMethod: string;
+  shippingCost: number;
+  
   createdAt: number;
 }
 

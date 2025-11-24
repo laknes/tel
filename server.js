@@ -72,11 +72,14 @@ async function initDB() {
         phoneNumber VARCHAR(50),
         verifiedAt BIGINT
       )`,
+      // ORDERS: Updated for Detailed Address & Shipping
       `CREATE TABLE IF NOT EXISTS orders (
         id VARCHAR(255) PRIMARY KEY,
         customerName VARCHAR(255),
         customerPhone VARCHAR(50),
-        customerAddress TEXT,
+        customerAddress JSON,
+        shippingMethod VARCHAR(255),
+        shippingCost DECIMAL(15,0),
         totalAmount DECIMAL(15,0),
         status VARCHAR(50),
         items JSON,
@@ -92,9 +95,11 @@ async function initDB() {
       await pool.query(sql);
     }
     
-    // Schema Migration
-    try { await pool.query("ALTER TABLE products ADD COLUMN itemsPerPackage INT DEFAULT 1"); } catch (e) {}
-    try { await pool.query("ALTER TABLE orders ADD COLUMN customerAddress TEXT"); } catch (e) {}
+    // Migration: Add JSON columns if needed
+    try { await pool.query("ALTER TABLE orders DROP COLUMN customerAddress"); } catch(e) {} 
+    try { await pool.query("ALTER TABLE orders ADD COLUMN customerAddress JSON"); } catch (e) {}
+    try { await pool.query("ALTER TABLE orders ADD COLUMN shippingMethod VARCHAR(255)"); } catch (e) {}
+    try { await pool.query("ALTER TABLE orders ADD COLUMN shippingCost DECIMAL(15,0)"); } catch (e) {}
 
     const [rows] = await pool.query('SELECT * FROM users WHERE username = ?', ['admin']);
     if (rows.length === 0) {
@@ -115,16 +120,15 @@ const checkDB = (req, res, next) => {
   next();
 };
 
-// --- API ENDPOINTS ---
+// --- ADMIN API ENDPOINTS ---
 
 app.post('/api/login', checkDB, async (req, res) => {
   const { username, password } = req.body;
   try {
     const [rows] = await pool.query('SELECT * FROM users WHERE username = ?', [username]);
     if (rows.length === 0) return res.json({ success: false, message: 'کاربر یافت نشد' });
-    
     if (rows[0].password !== password) return res.json({ success: false, message: 'رمز عبور اشتباه است' });
-    
+    if (rows[0].role !== 'ADMIN' && rows[0].role !== 'EDITOR') return res.json({ success: false, message: 'عدم دسترسی' });
     res.json({ success: true, user: rows[0] });
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
@@ -161,12 +165,19 @@ app.delete('/api/categories/:id', checkDB, async (req, res) => {
 
 app.get('/api/orders', checkDB, async (req, res) => {
   const [rows] = await pool.query('SELECT * FROM orders ORDER BY createdAt DESC');
-  res.json(rows.map(r => ({...r, items: typeof r.items === 'string' ? JSON.parse(r.items) : r.items})));
+  res.json(rows.map(r => ({
+      ...r, 
+      items: typeof r.items === 'string' ? JSON.parse(r.items) : r.items,
+      // Compatibility mapping for old frontend
+      customerAddress: typeof r.customerAddress === 'string' 
+        ? (r.customerAddress.startsWith('{') ? JSON.parse(r.customerAddress).fullAddress : r.customerAddress) 
+        : (r.customerAddress?.fullAddress || '---')
+  })));
 });
 app.post('/api/orders', checkDB, async (req, res) => {
   const o = req.body;
-  await pool.query('INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=?', 
-  [o.id, o.customerName, o.customerPhone, o.customerAddress, o.totalAmount, o.status, JSON.stringify(o.items), o.createdAt, o.status]);
+  await pool.query('INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=?', 
+  [o.id, o.customerName, o.customerPhone, JSON.stringify(o.address), o.shippingMethod, o.shippingCost, o.totalAmount, o.status, JSON.stringify(o.items), o.createdAt, o.status]);
   res.json({ success: true });
 });
 
@@ -190,10 +201,47 @@ app.post('/api/verified-users', checkDB, async (req, res) => {
   res.json({ success: true });
 });
 
+// --- STORE & SHIPPING APIs ---
+
+app.post('/api/store/login', checkDB, async (req, res) => {
+    const { username, password } = req.body;
+    try {
+        const [rows] = await pool.query('SELECT * FROM users WHERE username = ?', [username]);
+        if (rows.length > 0) {
+            if(rows[0].password === password) res.json({ success: true, user: rows[0] });
+            else res.json({ success: false, message: 'رمز عبور اشتباه است' });
+        } else {
+            res.json({ success: false, message: 'کاربر یافت نشد' });
+        }
+    } catch(e) { res.status(500).json({success: false, message: e.message}); }
+});
+
+app.post('/api/store/register', checkDB, async (req, res) => {
+    const { username, password, fullName } = req.body;
+    try {
+        await pool.query('INSERT INTO users (username, password, fullName, role, isVerified) VALUES (?, ?, ?, ?, ?)', 
+            [username, password, fullName, 'CUSTOMER', true]
+        );
+        res.json({ success: true, user: { username, fullName, role: 'CUSTOMER' } });
+    } catch(e) { 
+        if(e.code === 'ER_DUP_ENTRY') res.json({success: false, message: 'این شماره قبلا ثبت شده است'});
+        else res.status(500).json({success: false, message: e.message}); 
+    }
+});
+
+app.get('/api/store/shipping-methods', (req, res) => {
+    // Mock Shipping API - Connect to Post/Tipax APIs here in real app
+    res.json([
+        { id: 'post', name: 'پست پیشتاز (سراسر کشور)', cost: 45000, estimatedDays: '۳ تا ۵ روز کاری' },
+        { id: 'tipax', name: 'تیپاکس (پس کرایه)', cost: 0, estimatedDays: '۲ تا ۳ روز کاری' },
+        { id: 'mahex', name: 'ماهکس (پیک سریع)', cost: 80000, estimatedDays: '۱ تا ۲ روز کاری' },
+        { id: 'bike', name: 'پیک موتوری (فقط تهران)', cost: 120000, estimatedDays: 'تحویل فوری' }
+    ]);
+});
+
 // --- TELEGRAM BOT LOGIC ---
 const TG_BASE = 'https://api.telegram.org/bot';
 let lastUpdateId = 0;
-const userSessions = {};
 
 const dataURItoBuffer = (dataURI) => {
   if (!dataURI || !dataURI.startsWith('data:')) return null;
@@ -221,6 +269,9 @@ async function runBot() {
     const [products] = await pool.query('SELECT * FROM products');
     const [categories] = await pool.query('SELECT * FROM categories');
     const getCatName = (id) => categories.find(c => c.id === id)?.name || 'عمومی';
+
+    // Server URL detection (assumes running on standard ports)
+    const SERVER_URL = 'http://localhost:3001'; // CHANGE THIS TO YOUR PUBLIC IP/DOMAIN IN PRODUCTION
 
     const sendMsg = async (chatId, text, markup = null) => {
         const body = { chat_id: chatId, text, parse_mode: 'Markdown' };
@@ -257,14 +308,10 @@ async function runBot() {
         resize_keyboard: true, one_time_keyboard: true
     };
 
-    const cancelOrderBtn = {
-        inline_keyboard: [[{ text: "❌ لغو سفارش", callback_data: "cmd_cancel_order" }]]
-    };
-
     for (const update of data.result) {
         if (update.update_id > lastUpdateId) lastUpdateId = update.update_id;
 
-        // 1. INLINE QUERY
+        // INLINE QUERY
         if (update.inline_query) {
             const query = update.inline_query.query.toLowerCase();
             const filtered = products.filter(p => p.name.toLowerCase().includes(query) || (p.productCode && p.productCode.toLowerCase().includes(query))).slice(0, 20);
@@ -273,13 +320,13 @@ async function runBot() {
                 description: `کد: ${p.productCode || '-'} | 📦 بسته: ${p.itemsPerPackage || 1} عدد | ${Number(p.price).toLocaleString()} تومان`,
                 thumb_url: p.imageUrl || 'https://via.placeholder.com/100',
                 input_message_content: { message_text: `🛍 *${p.name}*\n🔢 کد: ${p.productCode}\n📦 تعداد در بسته: ${p.itemsPerPackage || 1} عدد\n💵 قیمت: ${Number(p.price).toLocaleString()} تومان\n\n📝 ${p.description}`, parse_mode: 'Markdown' },
-                reply_markup: { inline_keyboard: [[{ text: "🛒 خرید", callback_data: `order_${p.id}` }]] }
+                reply_markup: { inline_keyboard: [[{ text: "🛒 خرید (وب اپ)", url: `${SERVER_URL}?checkout=${p.id}` }]] }
             }));
             await fetch(`${TG_BASE}${config.botToken}/answerInlineQuery`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ inline_query_id: update.inline_query.id, results, cache_time: 1 }) });
             continue;
         }
 
-        // 2. CALLBACK QUERY
+        // CALLBACK QUERY
         if (update.callback_query) {
             const cb = update.callback_query;
             const data = cb.data;
@@ -287,27 +334,7 @@ async function runBot() {
 
             await answerCallback(cb.id);
 
-            if (data === 'cmd_cancel_order') {
-                delete userSessions[chatId];
-                await sendMsg(chatId, "❌ سفارش لغو شد.", mainMenuInline);
-                continue;
-            }
-
-            if (data.startsWith('order_')) {
-                const pid = data.split('_')[1];
-                const product = products.find(p => p.id === pid);
-                if (!product) {
-                    await sendMsg(chatId, "❌ محصول یافت نشد.");
-                } else {
-                    userSessions[chatId] = {
-                        step: 'AWAITING_NAME',
-                        tempOrder: { productId: pid, productName: product.name, productPrice: product.price, customerName: '', customerAddress: '', customerPhone: '' }
-                    };
-                    await sendMsg(chatId, `📝 *ثبت سفارش جدید*\nمحصول: ${product.name}\n📦 بسته: ${product.itemsPerPackage || 1} عدد\n\nلطفاً *نام و نام خانوادگی* خود را وارد کنید:`, cancelOrderBtn);
-                }
-            }
-
-            else if (data === 'cmd_products') {
+            if (data === 'cmd_products') {
                 if (categories.length === 0) {
                      const productButtons = products.slice(0, 20).map(p => ([{ text: `${p.name}`, callback_data: `prod_${p.id}` }]));
                     productButtons.push([{ text: "🔙 بازگشت", callback_data: "cmd_start" }]);
@@ -331,7 +358,15 @@ async function runBot() {
                 const product = products.find(p => p.id === pid);
                 if (product) {
                     const caption = `🛍 *${product.name}*\n🔢 کد: ${product.productCode || '---'}\n📦 تعداد در بسته: ${product.itemsPerPackage || 1} عدد\n📂 دسته: ${getCatName(product.category)}\n💵 قیمت: ${Number(product.price).toLocaleString()} تومان\n\n📝 ${product.description}`;
-                    const itemMarkup = { inline_keyboard: [[{ text: "🛒 ثبت سفارش", callback_data: `order_${product.id}` }], [{ text: "🔙 بازگشت", callback_data: `cat_${product.category}` }]] };
+                    
+                    // CHANGED: Button is now a Link to Web App
+                    const itemMarkup = { 
+                        inline_keyboard: [
+                            [{ text: "🛒 خرید آنلاین (وب اپ)", url: `${SERVER_URL}?checkout=${product.id}` }], 
+                            [{ text: "🔙 بازگشت", callback_data: `cat_${product.category}` }]
+                        ] 
+                    };
+                    
                     if (product.imageUrl && product.imageUrl.startsWith('data:')) {
                         const buffer = dataURItoBuffer(product.imageUrl);
                         if (buffer) await sendPhoto(chatId, buffer, caption, itemMarkup);
@@ -349,40 +384,6 @@ async function runBot() {
             const userId = update.message.from.id;
             const text = update.message.text;
             
-            if (userSessions[chatId]) {
-                const session = userSessions[chatId];
-                if (text && (text === '/start' || text === '❌ لغو سفارش')) {
-                    delete userSessions[chatId];
-                    await sendMsg(chatId, "❌ سفارش لغو شد.", mainMenuInline);
-                    continue;
-                }
-                if (session.step === 'AWAITING_NAME') {
-                    if (!text) { await sendMsg(chatId, "⚠️ نام را وارد کنید:"); continue; }
-                    session.tempOrder.customerName = text;
-                    session.step = 'AWAITING_ADDRESS';
-                    await sendMsg(chatId, `✅ نام: ${text}\n\n📍 لطفاً *آدرس* خود را وارد کنید:`, cancelOrderBtn);
-                }
-                else if (session.step === 'AWAITING_ADDRESS') {
-                    // FIX: Allow any text as address, do not force format
-                    if (!text) { await sendMsg(chatId, "⚠️ آدرس را وارد کنید:"); continue; }
-                    session.tempOrder.customerAddress = text;
-                    session.step = 'AWAITING_PHONE';
-                    const [vUsers] = await pool.query('SELECT phoneNumber FROM verified_users WHERE userId = ?', [userId]);
-                    if (vUsers.length > 0) {
-                        await finalizeOrder(chatId, session, vUsers[0].phoneNumber, config);
-                    } else {
-                        await sendMsg(chatId, `✅ آدرس ثبت شد.\n\n📞 لطفاً *شماره تماس* خود را وارد کنید:`, { keyboard: [[{text: "📱 ارسال شماره", request_contact: true}]], resize_keyboard: true, one_time_keyboard: true });
-                    }
-                }
-                else if (session.step === 'AWAITING_PHONE') {
-                    let phone = text;
-                    if (update.message.contact) phone = update.message.contact.phone_number;
-                    if (!phone) { await sendMsg(chatId, "شماره معتبر نیست!"); continue; }
-                    await finalizeOrder(chatId, session, phone, config);
-                }
-                continue;
-            }
-
             if (update.message.contact && update.message.contact.user_id === userId) {
                 const u = update.message.from;
                 const ph = update.message.contact.phone_number;
@@ -399,54 +400,9 @@ async function runBot() {
   } catch (e) { }
 }
 
-async function finalizeOrder(chatId, session, phone, config) {
-    const orderId = `ORD-${Date.now().toString().slice(-6)}`;
-    const order = {
-        id: orderId,
-        customerName: session.tempOrder.customerName,
-        customerPhone: phone,
-        customerAddress: session.tempOrder.customerAddress,
-        totalAmount: session.tempOrder.productPrice,
-        status: 'PENDING',
-        items: [{ productId: session.tempOrder.productId, productName: session.tempOrder.productName, quantity: 1, priceAtTime: session.tempOrder.productPrice }],
-        createdAt: Date.now()
-    };
-
-    try {
-        await pool.query('INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?, ?)', 
-        [order.id, order.customerName, order.customerPhone, order.customerAddress, order.totalAmount, order.status, JSON.stringify(order.items), order.createdAt]);
-
-        delete userSessions[chatId];
-        
-        let paymentButton = [];
-        if (config.paymentApiKey) {
-            // Fake Payment Link
-            const paymentUrl = `https://example.com/pay?order=${orderId}&amount=${order.totalAmount}`; 
-            paymentButton = [[{ text: "💳 پرداخت آنلاین", url: paymentUrl }]];
-        }
-
-        const successMarkup = {
-            inline_keyboard: [
-                ...paymentButton,
-                [{ text: "🛍 بازگشت به فروشگاه", callback_data: "cmd_products" }]
-            ]
-        };
-
-        await fetch(`${TG_BASE}${config.botToken}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                chat_id: chatId,
-                text: `🎉 *سفارش ثبت شد!*\n\n🧾 کد: \`${orderId}\`\n📦 محصول: ${session.tempOrder.productName}\n💰 مبلغ: ${Number(order.totalAmount).toLocaleString()} تومان\n📍 آدرس: ${order.customerAddress}\n\n${config.paymentApiKey ? 'جهت تکمیل خرید روی دکمه پرداخت کلیک کنید.' : 'همکاران ما تماس خواهند گرفت.'}`,
-                parse_mode: 'Markdown',
-                reply_markup: successMarkup
-            })
-        });
-    } catch (e) { console.error("Order Save Error", e); }
-}
-
 setInterval(runBot, 2000);
 
+// Handle all other routes for React Router (Customer View)
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
