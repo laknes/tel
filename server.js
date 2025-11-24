@@ -1,4 +1,3 @@
-
 import express from 'express';
 import mysql from 'mysql2/promise';
 import cors from 'cors';
@@ -72,7 +71,6 @@ async function initDB() {
         phoneNumber VARCHAR(50),
         verifiedAt BIGINT
       )`,
-      // ORDERS: Updated for Detailed Address & Shipping
       `CREATE TABLE IF NOT EXISTS orders (
         id VARCHAR(255) PRIMARY KEY,
         customerName VARCHAR(255),
@@ -95,18 +93,23 @@ async function initDB() {
       await pool.query(sql);
     }
     
-    // Migration: Add JSON columns if needed
-    try { await pool.query("ALTER TABLE orders DROP COLUMN customerAddress"); } catch(e) {} 
-    try { await pool.query("ALTER TABLE orders ADD COLUMN customerAddress JSON"); } catch (e) {}
-    try { await pool.query("ALTER TABLE orders ADD COLUMN shippingMethod VARCHAR(255)"); } catch (e) {}
-    try { await pool.query("ALTER TABLE orders ADD COLUMN shippingCost DECIMAL(15,0)"); } catch (e) {}
-
     const [rows] = await pool.query('SELECT * FROM users WHERE username = ?', ['admin']);
     if (rows.length === 0) {
       await pool.query('INSERT INTO users (username, password, fullName, role, isVerified) VALUES (?, ?, ?, ?, ?)', 
         ['admin', '123', 'مدیر سیستم', 'ADMIN', true]
       );
     }
+    
+    // Seed Default Shipping Methods if not exists
+    const [shipRows] = await pool.query('SELECT data FROM configs WHERE id = ?', ['shipping']);
+    if (shipRows.length === 0) {
+        const defaultShipping = [
+            { id: 'post', name: 'پست پیشتاز', cost: 45000, estimatedDays: '۳ تا ۵ روز کاری' },
+            { id: 'tipax', name: 'تیپاکس (پس کرایه)', cost: 0, estimatedDays: '۲ تا ۳ روز کاری' }
+        ];
+        await pool.query('INSERT INTO configs (id, data) VALUES (?, ?)', ['shipping', JSON.stringify(defaultShipping)]);
+    }
+
     console.log('✅ Database initialized successfully');
   } catch (error) {
     console.error('❌ Database initialization FAILED:', error.message);
@@ -168,10 +171,7 @@ app.get('/api/orders', checkDB, async (req, res) => {
   res.json(rows.map(r => ({
       ...r, 
       items: typeof r.items === 'string' ? JSON.parse(r.items) : r.items,
-      // Compatibility mapping for old frontend
-      customerAddress: typeof r.customerAddress === 'string' 
-        ? (r.customerAddress.startsWith('{') ? JSON.parse(r.customerAddress).fullAddress : r.customerAddress) 
-        : (r.customerAddress?.fullAddress || '---')
+      customerAddress: typeof r.customerAddress === 'string' ? (r.customerAddress.startsWith('{') ? JSON.parse(r.customerAddress).fullAddress : r.customerAddress) : (r.customerAddress?.fullAddress || '---')
   })));
 });
 app.post('/api/orders', checkDB, async (req, res) => {
@@ -203,6 +203,20 @@ app.post('/api/verified-users', checkDB, async (req, res) => {
 
 // --- STORE & SHIPPING APIs ---
 
+app.get('/api/store/shipping-methods', checkDB, async (req, res) => {
+    try {
+        const [rows] = await pool.query('SELECT data FROM configs WHERE id = ?', ['shipping']);
+        res.json(rows.length ? (typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data) : []);
+    } catch (e) { res.status(500).json([]); }
+});
+
+app.post('/api/store/shipping-methods', checkDB, async (req, res) => {
+    try {
+        await pool.query('INSERT INTO configs (id, data) VALUES (?, ?) ON DUPLICATE KEY UPDATE data=?', ['shipping', JSON.stringify(req.body), JSON.stringify(req.body)]);
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
 app.post('/api/store/login', checkDB, async (req, res) => {
     const { username, password } = req.body;
     try {
@@ -227,16 +241,6 @@ app.post('/api/store/register', checkDB, async (req, res) => {
         if(e.code === 'ER_DUP_ENTRY') res.json({success: false, message: 'این شماره قبلا ثبت شده است'});
         else res.status(500).json({success: false, message: e.message}); 
     }
-});
-
-app.get('/api/store/shipping-methods', (req, res) => {
-    // Mock Shipping API - Connect to Post/Tipax APIs here in real app
-    res.json([
-        { id: 'post', name: 'پست پیشتاز (سراسر کشور)', cost: 45000, estimatedDays: '۳ تا ۵ روز کاری' },
-        { id: 'tipax', name: 'تیپاکس (پس کرایه)', cost: 0, estimatedDays: '۲ تا ۳ روز کاری' },
-        { id: 'mahex', name: 'ماهکس (پیک سریع)', cost: 80000, estimatedDays: '۱ تا ۲ روز کاری' },
-        { id: 'bike', name: 'پیک موتوری (فقط تهران)', cost: 120000, estimatedDays: 'تحویل فوری' }
-    ]);
 });
 
 // --- TELEGRAM BOT LOGIC ---
@@ -270,8 +274,9 @@ async function runBot() {
     const [categories] = await pool.query('SELECT * FROM categories');
     const getCatName = (id) => categories.find(c => c.id === id)?.name || 'عمومی';
 
-    // Server URL detection (assumes running on standard ports)
-    const SERVER_URL = 'http://localhost:3001'; // CHANGE THIS TO YOUR PUBLIC IP/DOMAIN IN PRODUCTION
+    // Dynamic Server URL (Important for working on different IPs)
+    // In production, this should be set via env var
+    const SERVER_URL = process.env.PUBLIC_URL || 'http://YOUR_SERVER_IP:3001'; 
 
     const sendMsg = async (chatId, text, markup = null) => {
         const body = { chat_id: chatId, text, parse_mode: 'Markdown' };
@@ -301,11 +306,6 @@ async function runBot() {
             [{ text: "🛍 محصولات", callback_data: "cmd_products" }, { text: "🔍 جستجو", callback_data: "cmd_search" }],
             [{ text: "📞 ارتباط با ما", callback_data: "cmd_contact" }, { text: "ℹ️ راهنما", callback_data: "cmd_help" }]
         ]
-    };
-
-    const contactMenu = {
-        keyboard: [[{ text: "📱 تایید شماره تلفن (الزامی)", request_contact: true }]],
-        resize_keyboard: true, one_time_keyboard: true
     };
 
     for (const update of data.result) {
@@ -359,10 +359,14 @@ async function runBot() {
                 if (product) {
                     const caption = `🛍 *${product.name}*\n🔢 کد: ${product.productCode || '---'}\n📦 تعداد در بسته: ${product.itemsPerPackage || 1} عدد\n📂 دسته: ${getCatName(product.category)}\n💵 قیمت: ${Number(product.price).toLocaleString()} تومان\n\n📝 ${product.description}`;
                     
-                    // CHANGED: Button is now a Link to Web App
+                    // Using Dynamic URL for Checkout
+                    // NOTE: In local dev, Telegram cannot access localhost.
+                    // We must use the server's LAN IP or a tunnel (ngrok) for this to work on mobile.
+                    const checkoutLink = `${SERVER_URL}?checkout=${product.id}`;
+
                     const itemMarkup = { 
                         inline_keyboard: [
-                            [{ text: "🛒 خرید آنلاین (وب اپ)", url: `${SERVER_URL}?checkout=${product.id}` }], 
+                            [{ text: "🛒 خرید آنلاین (وب اپ)", url: checkoutLink }], 
                             [{ text: "🔙 بازگشت", callback_data: `cat_${product.category}` }]
                         ] 
                     };
@@ -381,19 +385,10 @@ async function runBot() {
         // TEXT MESSAGES
         if (update.message) {
             const chatId = update.message.chat.id;
-            const userId = update.message.from.id;
             const text = update.message.text;
             
-            if (update.message.contact && update.message.contact.user_id === userId) {
-                const u = update.message.from;
-                const ph = update.message.contact.phone_number;
-                await pool.query('INSERT INTO verified_users VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE phoneNumber=?', [u.id, u.first_name, u.last_name, u.username, ph, Date.now(), ph]); 
-                await sendMsg(chatId, `✅ تایید شد. خوش آمدید.`, mainMenuInline);
-            }
-            else if (text === '/start') {
-                const [verifiedRows] = await pool.query('SELECT * FROM verified_users WHERE userId = ?', [userId]);
-                if (verifiedRows.length > 0) await sendMsg(chatId, `👋 سلام! خوش آمدید.`, mainMenuInline);
-                else await sendMsg(chatId, `👋 لطفا شماره خود را تایید کنید.`, contactMenu);
+            if (text === '/start') {
+                await sendMsg(chatId, `👋 به فروشگاه ما خوش آمدید!`, mainMenuInline);
             }
         }
     }
@@ -402,7 +397,6 @@ async function runBot() {
 
 setInterval(runBot, 2000);
 
-// Handle all other routes for React Router (Customer View)
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
