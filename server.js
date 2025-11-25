@@ -16,25 +16,35 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const PUBLIC_URL = process.env.PUBLIC_URL || `http://127.0.0.1:${PORT}`;
 
-console.log(`🚀 Server starting...`);
-console.log(`🔗 Public URL for Bot Links: ${PUBLIC_URL}`);
+console.log(`=========================================`);
+console.log(`🚀 Server Starting...`);
+console.log(`🔗 Web App Link: ${PUBLIC_URL}`);
+console.log(`=========================================`);
 
 app.use(cors());
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'dist')));
 
+// Database Configuration
 const dbConfig = {
   host: '127.0.0.1',
   user: 'root',
   password: '',
   database: 'teleshop_db',
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
   multipleStatements: true
 };
 
 let pool;
 
+// --- ROBUST DATABASE CONNECTION ---
 async function initDB() {
   try {
+    console.log('🔄 Connecting to MySQL...');
+    
+    // 1. Attempt to create DB if not exists
     const tempConnection = await mysql.createConnection({
       host: dbConfig.host,
       user: dbConfig.user,
@@ -43,8 +53,14 @@ async function initDB() {
     await tempConnection.query(`CREATE DATABASE IF NOT EXISTS ${dbConfig.database}`);
     await tempConnection.end();
 
+    // 2. Create Connection Pool
     pool = mysql.createPool(dbConfig);
 
+    // 3. Test Connection
+    const [test] = await pool.query('SELECT 1');
+    console.log('✅ Database Connected Successfully!');
+
+    // 4. Create/Update Tables
     const tables = [
       `CREATE TABLE IF NOT EXISTS products (id VARCHAR(255) PRIMARY KEY, productCode VARCHAR(50), name VARCHAR(255), price DECIMAL(15,0), itemsPerPackage INT DEFAULT 1, category VARCHAR(255), description TEXT, imageUrl LONGTEXT, createdAt BIGINT)`,
       `CREATE TABLE IF NOT EXISTS categories (id VARCHAR(255) PRIMARY KEY, name VARCHAR(255))`,
@@ -55,26 +71,45 @@ async function initDB() {
       `CREATE TABLE IF NOT EXISTS configs (id VARCHAR(50) PRIMARY KEY, data JSON)`
     ];
 
-    for (const sql of tables) await pool.query(sql);
+    for (const sql of tables) {
+        await pool.query(sql);
+    }
     
+    // Seed Admin
     const [rows] = await pool.query('SELECT * FROM users WHERE username = ?', ['admin']);
-    if (rows.length === 0) await pool.query('INSERT INTO users VALUES (?, ?, ?, ?, ?)', ['admin', '123', 'مدیر سیستم', 'ADMIN', true]);
+    if (rows.length === 0) {
+        await pool.query('INSERT INTO users VALUES (?, ?, ?, ?, ?)', ['admin', '123', 'مدیر سیستم', 'ADMIN', true]);
+    }
     
+    // Seed Shipping
     const [shipRows] = await pool.query('SELECT data FROM configs WHERE id = ?', ['shipping']);
     if (shipRows.length === 0) {
         const defaultShipping = [{ id: 'post', name: 'پست پیشتاز', cost: 45000, estimatedDays: '۳ تا ۵ روز کاری' }, { id: 'tipax', name: 'تیپاکس', cost: 0, estimatedDays: '۲ تا ۳ روز کاری' }];
         await pool.query('INSERT INTO configs VALUES (?, ?)', ['shipping', JSON.stringify(defaultShipping)]);
     }
-    console.log('✅ Database initialized');
-  } catch (error) { console.error('❌ DB Error:', error.message); }
+
+  } catch (error) { 
+    console.error('❌ CRITICAL DATABASE ERROR:', error.message);
+    console.error('⚠️  Please check if MySQL is running: "sudo systemctl status mysql"');
+  }
 }
 
 initDB();
 
+// Middleware to check DB
 const checkDB = (req, res, next) => {
-  if (!pool) return res.status(500).json({ success: false, message: 'Database disconnected' });
+  if (!pool) return res.status(500).json({ success: false, message: 'Database disconnected. Contact Admin.' });
   next();
 };
+
+// --- Keep Alive Mechanism ---
+// Ping DB every 1 hour to prevent connection close
+setInterval(async () => {
+    if(pool) {
+        try { await pool.query('SELECT 1'); } catch(e) { console.log('Keepalive failed, reconnecting...'); initDB(); }
+    }
+}, 3600000);
+
 
 // --- APIs ---
 app.post('/api/login', checkDB, async (req, res) => {
@@ -122,7 +157,6 @@ app.get('/api/orders', checkDB, async (req, res) => {
 app.post('/api/orders', checkDB, async (req, res) => {
   const o = req.body;
   await pool.query('INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=?', [o.id, o.customerName, o.customerPhone, JSON.stringify(o.address), o.shippingMethod, o.shippingCost, o.totalAmount, o.status, JSON.stringify(o.items), o.createdAt, o.status]);
-  // Clear cart after order
   if (o.customerId) {
       await pool.query('DELETE FROM carts WHERE userId = ?', [o.customerId]);
   }
@@ -170,21 +204,17 @@ app.post('/api/store/register', checkDB, async (req, res) => {
     } catch(e) { res.json({ success: false, message: 'User exists' }); }
 });
 
-// Get Cart Items for Store
+// Get Cart Items
 app.get('/api/store/cart/:userId', checkDB, async (req, res) => {
     try {
         const [cartRows] = await pool.query('SELECT items FROM carts WHERE userId = ?', [req.params.userId]);
         if (cartRows.length === 0) return res.json([]);
-        
         const items = typeof cartRows[0].items === 'string' ? JSON.parse(cartRows[0].items) : cartRows[0].items;
         const [products] = await pool.query('SELECT * FROM products');
-        
-        // Hydrate items with product details
         const fullItems = items.map(item => {
             const product = products.find(p => p.id === item.productId);
             return product ? { ...product, quantity: item.quantity } : null;
         }).filter(i => i !== null);
-        
         res.json(fullItems);
     } catch (e) { res.status(500).json([]); }
 });
@@ -210,8 +240,8 @@ async function runBot() {
     const config = typeof configRows[0].data === 'string' ? JSON.parse(configRows[0].data) : configRows[0].data;
     if (!config || !config.botToken) return;
 
-    const offset = lastUpdateId + 1;
-    const res = await fetch(`${TG_BASE}${config.botToken}/getUpdates?offset=${offset}&limit=50&timeout=0`);
+    // Short polling
+    const res = await fetch(`${TG_BASE}${config.botToken}/getUpdates?offset=${lastUpdateId + 1}&limit=50&timeout=0`);
     const data = await res.json();
 
     if (!data.ok || !data.result || data.result.length === 0) return;
@@ -247,38 +277,47 @@ async function runBot() {
     for (const update of data.result) {
         if (update.update_id > lastUpdateId) lastUpdateId = update.update_id;
 
+        const CART_LINK = (uid) => `${PUBLIC_URL}?cart=${uid}`;
+
+        if (update.inline_query) {
+            const query = update.inline_query.query.toLowerCase();
+            const filtered = products.filter(p => p.name.toLowerCase().includes(query) || (p.productCode && p.productCode.toLowerCase().includes(query))).slice(0, 20);
+            const results = filtered.map(p => ({
+                type: 'article', id: p.id, title: p.name,
+                description: `کد: ${p.productCode || '-'} | ${Number(p.price).toLocaleString()} تومان`,
+                thumb_url: p.imageUrl || 'https://via.placeholder.com/100',
+                input_message_content: { message_text: `🛍 *${p.name}*\n💵 ${Number(p.price).toLocaleString()} تومان`, parse_mode: 'Markdown' },
+                reply_markup: { inline_keyboard: [[{ text: "🛒 مشاهده سبد", callback_data: "cmd_cart" }]] }
+            }));
+            await fetch(`${TG_BASE}${config.botToken}/answerInlineQuery`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ inline_query_id: update.inline_query.id, results, cache_time: 1 }) });
+            continue;
+        }
+
         if (update.callback_query) {
             const cb = update.callback_query;
             const data = cb.data;
             const chatId = cb.message.chat.id;
             const userId = cb.from.id;
 
-            // ADD TO CART
             if (data.startsWith('add_')) {
                 const pid = data.split('_')[1];
-                // Get current cart
                 const [cartRows] = await pool.query('SELECT items FROM carts WHERE userId = ?', [userId]);
                 let items = cartRows.length ? (typeof cartRows[0].items === 'string' ? JSON.parse(cartRows[0].items) : cartRows[0].items) : [];
-                
                 const exist = items.find(i => i.productId === pid);
                 if (exist) exist.quantity++;
                 else items.push({ productId: pid, quantity: 1 });
-                
                 await pool.query('INSERT INTO carts VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE items=?, updatedAt=?', [userId, JSON.stringify(items), Date.now(), JSON.stringify(items), Date.now()]);
-                
                 await answerCallback(cb.id, "✅ به سبد خرید اضافه شد");
                 continue;
             }
 
-            // CLEAR CART
             if (data === 'cmd_clear') {
                 await pool.query('DELETE FROM carts WHERE userId = ?', [userId]);
-                await answerCallback(cb.id, "سبد خرید خالی شد");
+                await answerCallback(cb.id, "سبد خالی شد");
                 await sendMsg(chatId, "🗑 سبد خرید شما خالی شد.", mainMenuInline);
                 continue;
             }
 
-            // VIEW CART
             if (data === 'cmd_cart') {
                 await answerCallback(cb.id);
                 const [cartRows] = await pool.query('SELECT items FROM carts WHERE userId = ?', [userId]);
@@ -299,12 +338,9 @@ async function runBot() {
                     });
                     msg += `\n💵 *جمع کل: ${total.toLocaleString()} تومان*`;
                     
-                    // The Web App link now sends the USER_ID as the cart identifier
-                    const cartLink = `${PUBLIC_URL}?cart=${userId}`;
-                    
                     await sendMsg(chatId, msg, {
                         inline_keyboard: [
-                            [{ text: "💳 تکمیل خرید (Web App)", url: cartLink }],
+                            [{ text: "💳 تکمیل خرید (Web App)", url: CART_LINK(userId) }],
                             [{ text: "❌ خالی کردن سبد", callback_data: "cmd_clear" }],
                             [{ text: "🔙 بازگشت", callback_data: "cmd_start" }]
                         ]
@@ -313,7 +349,6 @@ async function runBot() {
                 continue;
             }
 
-            // PRODUCTS, CATEGORIES, ETC (Same as before)
             if (data === 'cmd_products') {
                 if (categories.length === 0) {
                      const productButtons = products.slice(0, 20).map(p => ([{ text: `${p.name}`, callback_data: `prod_${p.id}` }]));
@@ -352,7 +387,6 @@ async function runBot() {
             }
             else if (data === 'cmd_start') await sendMsg(chatId, "🏠 *منوی اصلی*", mainMenuInline);
             
-            // Handle default callbacks
             await answerCallback(cb.id);
             continue;
         }
@@ -366,6 +400,7 @@ async function runBot() {
 
 setInterval(runBot, 2000);
 
+// SPA Fallback
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
