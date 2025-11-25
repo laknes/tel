@@ -1,13 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { Product, ShippingMethod, User, Order } from '../types';
+import { Product, ShippingMethod, User } from '../types';
 
 interface StoreCheckoutProps {
-  productId: string;
+  cartUserId: string;
 }
 
-export const StoreCheckout: React.FC<StoreCheckoutProps> = ({ productId }) => {
+// Cart item extended with Product details
+interface CartItem extends Product {
+    quantity: number;
+}
+
+export const StoreCheckout: React.FC<StoreCheckoutProps> = ({ cartUserId }) => {
   const [step, setStep] = useState<'LOGIN' | 'ADDRESS' | 'SHIPPING' | 'INVOICE' | 'PAYMENT'>('LOGIN');
-  const [product, setProduct] = useState<Product | null>(null);
+  const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [user, setUser] = useState<User | null>(null);
   
   const [phone, setPhone] = useState('');
@@ -22,13 +27,19 @@ export const StoreCheckout: React.FC<StoreCheckoutProps> = ({ productId }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // Fetch Cart items for this Telegram User
   useEffect(() => {
-    fetch(`/api/products`).then(res => res.json()).then((products: Product[]) => {
-      const p = products.find(i => i.id === productId);
-      if (p) setProduct(p);
-    });
+    setLoading(true);
+    fetch(`/api/store/cart/${cartUserId}`)
+        .then(res => res.json())
+        .then(items => {
+            setCartItems(items);
+            setLoading(false);
+        })
+        .catch(() => setLoading(false));
+        
     fetch(`/api/store/shipping-methods`).then(res => res.json()).then(setShippingMethods);
-  }, [productId]);
+  }, [cartUserId]);
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -43,20 +54,35 @@ export const StoreCheckout: React.FC<StoreCheckoutProps> = ({ productId }) => {
   };
 
   const handleSubmitOrder = async () => {
-    if (!product || !user || !selectedShipping) return;
+    if (cartItems.length === 0 || !user || !selectedShipping) return;
     setLoading(true);
+    
     const method = shippingMethods.find(m => m.id === selectedShipping);
     const shippingCost = method ? Number(method.cost) : 0;
-    const totalAmount = Number(product.price) + shippingCost;
+    const itemsTotal = cartItems.reduce((sum, item) => sum + (Number(item.price) * item.quantity), 0);
+    const totalAmount = itemsTotal + shippingCost;
 
     try {
       const res = await fetch('/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          customerId: user.username, customerName: user.fullName, customerPhone: user.phoneNumber || user.username,
-          address, shippingMethod: method?.name, shippingCost, totalAmount, status: 'PENDING', createdAt: Date.now(),
-          items: [{ productId: product.id, productName: product.name, quantity: 1, priceAtTime: product.price }]
+          id: `ORD-${Date.now().toString().slice(-6)}`,
+          customerId: cartUserId, // Use Telegram ID as link key to clear cart
+          customerName: user.fullName, 
+          customerPhone: user.phoneNumber || user.username,
+          address, 
+          shippingMethod: method?.name, 
+          shippingCost, 
+          totalAmount, 
+          status: 'PENDING', 
+          createdAt: Date.now(),
+          items: cartItems.map(item => ({ 
+              productId: item.id, 
+              productName: item.name, 
+              quantity: item.quantity, 
+              priceAtTime: item.price 
+          }))
         })
       });
       const data = await res.json();
@@ -65,18 +91,33 @@ export const StoreCheckout: React.FC<StoreCheckoutProps> = ({ productId }) => {
     setLoading(false);
   };
 
-  if (!product) return <div className="p-10 text-center">در حال بارگذاری...</div>;
+  if (loading && cartItems.length === 0) return <div className="p-10 text-center">در حال بارگذاری سبد خرید...</div>;
+  if (cartItems.length === 0) return <div className="p-10 text-center">سبد خرید خالی است.</div>;
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-4 font-sans" dir="rtl">
       <div className="w-full max-w-md bg-white rounded-2xl shadow-xl overflow-hidden">
-        <div className="bg-brand-600 p-4 text-white text-center"><h1 className="font-bold">تکمیل خرید</h1><p className="text-xs">{product.name}</p></div>
+        <div className="bg-brand-600 p-4 text-white text-center">
+            <h1 className="font-bold">سبد خرید</h1>
+            <p className="text-xs">{cartItems.length} محصول</p>
+        </div>
+        
         <div className="p-6">
           {error && <div className="mb-4 p-3 bg-red-50 text-red-600 rounded text-sm text-center">{error}</div>}
 
           {step === 'LOGIN' && (
             <form onSubmit={handleAuth} className="space-y-4">
-              <h2 className="text-center font-bold">{authMode === 'LOGIN' ? 'ورود' : 'ثبت نام'}</h2>
+                {/* Show Mini Cart Summary */}
+                <div className="bg-gray-50 p-3 rounded-xl mb-4 max-h-32 overflow-y-auto">
+                    {cartItems.map(item => (
+                        <div key={item.id} className="flex justify-between text-xs mb-1">
+                            <span>{item.name} ({item.quantity})</span>
+                            <span>{(item.price * item.quantity).toLocaleString()}</span>
+                        </div>
+                    ))}
+                </div>
+
+              <h2 className="text-center font-bold">{authMode === 'LOGIN' ? 'ورود به حساب' : 'ثبت نام'}</h2>
               {authMode === 'REGISTER' && <input placeholder="نام کامل" className="w-full p-3 border rounded-xl" value={fullName} onChange={e => setFullName(e.target.value)} required />}
               <input placeholder="شماره موبایل" className="w-full p-3 border rounded-xl" value={phone} onChange={e => setPhone(e.target.value)} required />
               <input type="password" placeholder="رمز عبور" className="w-full p-3 border rounded-xl" value={password} onChange={e => setPassword(e.target.value)} required />
@@ -112,9 +153,20 @@ export const StoreCheckout: React.FC<StoreCheckoutProps> = ({ productId }) => {
             <div className="space-y-4">
               <h2 className="text-center font-bold">🧾 فاکتور نهایی</h2>
               <div className="bg-gray-50 p-4 rounded-xl space-y-2 text-sm">
-                <div className="flex justify-between"><span>محصول</span><span>{Number(product.price).toLocaleString()} ت</span></div>
+                {cartItems.map(item => (
+                    <div key={item.id} className="flex justify-between"><span>{item.name} x{item.quantity}</span><span>{(item.price * item.quantity).toLocaleString()}</span></div>
+                ))}
+                <div className="border-t my-2"></div>
                 <div className="flex justify-between text-gray-600"><span>هزینه ارسال</span><span>{shippingMethods.find(m => m.id === selectedShipping)?.cost.toLocaleString()} ت</span></div>
-                <div className="border-t pt-2 flex justify-between font-bold text-lg"><span>مجموع</span><span>{(Number(product.price) + (shippingMethods.find(m => m.id === selectedShipping)?.cost || 0)).toLocaleString()} ت</span></div>
+                <div className="border-t pt-2 flex justify-between font-bold text-lg">
+                    <span>مجموع قابل پرداخت</span>
+                    <span>
+                        {(
+                            cartItems.reduce((sum, item) => sum + (Number(item.price) * item.quantity), 0) + 
+                            (shippingMethods.find(m => m.id === selectedShipping)?.cost || 0)
+                        ).toLocaleString()} ت
+                    </span>
+                </div>
               </div>
               <button onClick={handleSubmitOrder} disabled={loading} className="w-full py-3 bg-green-600 text-white rounded-xl font-bold shadow-lg">{loading ? '...' : 'پرداخت آنلاین'}</button>
               <button onClick={() => setStep('SHIPPING')} className="w-full py-2 text-gray-500">بازگشت</button>
@@ -124,8 +176,9 @@ export const StoreCheckout: React.FC<StoreCheckoutProps> = ({ productId }) => {
           {step === 'PAYMENT' && (
             <div className="text-center py-10">
               <div className="text-6xl mb-4">✅</div>
-              <h2 className="font-bold text-green-600">ثبت شد!</h2>
-              <p className="text-gray-500">در حال انتقال به درگاه...</p>
+              <h2 className="font-bold text-green-600">سفارش شما ثبت شد!</h2>
+              <p className="text-gray-500 mt-2">کد پیگیری: ORD-{Date.now().toString().slice(-6)}</p>
+              <p className="text-sm text-gray-400 mt-4">در حال انتقال به درگاه بانکی...</p>
             </div>
           )}
         </div>

@@ -15,25 +15,22 @@ import { AuthService } from './services/auth';
 import { sendProductToTelegram } from './services/telegram';
 
 function App() {
-  // --- ROUTING LOGIC ---
-  const [checkoutProductId, setCheckoutProductId] = useState<string | null>(null);
+  const [cartUserId, setCartUserId] = useState<string | null>(null);
 
   useEffect(() => {
-    // Check both query params (standard) and hash routing if used
     const params = new URLSearchParams(window.location.search);
-    const prodId = params.get('checkout');
-    
-    if (prodId) {
-      setCheckoutProductId(prodId);
+    const cartId = params.get('cart');
+    if (cartId) {
+      setCartUserId(cartId);
     }
   }, []);
 
-  // --- RENDER STORE IF CHECKOUT ---
-  if (checkoutProductId) {
-    return <StoreCheckout productId={checkoutProductId} />;
+  // If URL has ?cart=123, show Checkout Page
+  if (cartUserId) {
+    return <StoreCheckout cartUserId={cartUserId} />;
   }
 
-  // --- ADMIN PANEL LOGIC ---
+  // --- ADMIN PANEL ---
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [currentView, setCurrentView] = useState<AppView>(AppView.DASHBOARD);
   const [products, setProducts] = useState<Product[]>([]);

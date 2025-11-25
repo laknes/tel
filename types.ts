@@ -97,15 +97,13 @@ export interface Order {
   customerName: string;
   customerPhone?: string;
   
-  // Detailed Address (can be Address object or string for legacy)
   address?: Address;
-  customerAddress?: string; // Keep for legacy compatibility
+  customerAddress?: string;
 
   totalAmount: number;
   status: OrderStatus;
   items: OrderItem[];
   
-  // Shipping
   shippingMethod?: string;
   shippingCost?: number;
   
