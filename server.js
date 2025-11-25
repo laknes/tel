@@ -4,7 +4,6 @@ import cors from 'cors';
 import bodyParser from 'body-parser';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import fs from 'fs';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -16,35 +15,27 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const PUBLIC_URL = process.env.PUBLIC_URL || `http://127.0.0.1:${PORT}`;
 
-console.log(`=========================================`);
-console.log(`🚀 Server Starting...`);
-console.log(`🔗 Web App Link: ${PUBLIC_URL}`);
-console.log(`=========================================`);
+console.log(`🚀 Server Starting on Port ${PORT}`);
+console.log(`🔗 Web App URL: ${PUBLIC_URL}`);
 
 app.use(cors());
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'dist')));
 
-// Database Configuration
+// DB Config (Matches update.sh reset)
 const dbConfig = {
   host: '127.0.0.1',
   user: 'root',
   password: '',
   database: 'teleshop_db',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
   multipleStatements: true
 };
 
 let pool;
 
-// --- ROBUST DATABASE CONNECTION ---
 async function initDB() {
   try {
-    console.log('🔄 Connecting to MySQL...');
-    
-    // 1. Attempt to create DB if not exists
+    console.log('🔄 Connecting to Database...');
     const tempConnection = await mysql.createConnection({
       host: dbConfig.host,
       user: dbConfig.user,
@@ -53,14 +44,12 @@ async function initDB() {
     await tempConnection.query(`CREATE DATABASE IF NOT EXISTS ${dbConfig.database}`);
     await tempConnection.end();
 
-    // 2. Create Connection Pool
     pool = mysql.createPool(dbConfig);
-
-    // 3. Test Connection
-    const [test] = await pool.query('SELECT 1');
+    
+    // Test Connection
+    await pool.query('SELECT 1');
     console.log('✅ Database Connected Successfully!');
 
-    // 4. Create/Update Tables
     const tables = [
       `CREATE TABLE IF NOT EXISTS products (id VARCHAR(255) PRIMARY KEY, productCode VARCHAR(50), name VARCHAR(255), price DECIMAL(15,0), itemsPerPackage INT DEFAULT 1, category VARCHAR(255), description TEXT, imageUrl LONGTEXT, createdAt BIGINT)`,
       `CREATE TABLE IF NOT EXISTS categories (id VARCHAR(255) PRIMARY KEY, name VARCHAR(255))`,
@@ -71,45 +60,23 @@ async function initDB() {
       `CREATE TABLE IF NOT EXISTS configs (id VARCHAR(50) PRIMARY KEY, data JSON)`
     ];
 
-    for (const sql of tables) {
-        await pool.query(sql);
-    }
+    for (const sql of tables) await pool.query(sql);
     
-    // Seed Admin
     const [rows] = await pool.query('SELECT * FROM users WHERE username = ?', ['admin']);
-    if (rows.length === 0) {
-        await pool.query('INSERT INTO users VALUES (?, ?, ?, ?, ?)', ['admin', '123', 'مدیر سیستم', 'ADMIN', true]);
-    }
+    if (rows.length === 0) await pool.query('INSERT INTO users VALUES (?, ?, ?, ?, ?)', ['admin', '123', 'مدیر سیستم', 'ADMIN', true]);
     
-    // Seed Shipping
-    const [shipRows] = await pool.query('SELECT data FROM configs WHERE id = ?', ['shipping']);
-    if (shipRows.length === 0) {
-        const defaultShipping = [{ id: 'post', name: 'پست پیشتاز', cost: 45000, estimatedDays: '۳ تا ۵ روز کاری' }, { id: 'tipax', name: 'تیپاکس', cost: 0, estimatedDays: '۲ تا ۳ روز کاری' }];
-        await pool.query('INSERT INTO configs VALUES (?, ?)', ['shipping', JSON.stringify(defaultShipping)]);
-    }
-
   } catch (error) { 
-    console.error('❌ CRITICAL DATABASE ERROR:', error.message);
-    console.error('⚠️  Please check if MySQL is running: "sudo systemctl status mysql"');
+    console.error('❌ DB CONNECTION FAILED:', error.message);
+    console.error('⚠️  Run ./update.sh to fix database permissions.');
   }
 }
 
 initDB();
 
-// Middleware to check DB
 const checkDB = (req, res, next) => {
-  if (!pool) return res.status(500).json({ success: false, message: 'Database disconnected. Contact Admin.' });
+  if (!pool) return res.status(500).json({ success: false, message: 'Database disconnected' });
   next();
 };
-
-// --- Keep Alive Mechanism ---
-// Ping DB every 1 hour to prevent connection close
-setInterval(async () => {
-    if(pool) {
-        try { await pool.query('SELECT 1'); } catch(e) { console.log('Keepalive failed, reconnecting...'); initDB(); }
-    }
-}, 3600000);
-
 
 // --- APIs ---
 app.post('/api/login', checkDB, async (req, res) => {
@@ -240,8 +207,8 @@ async function runBot() {
     const config = typeof configRows[0].data === 'string' ? JSON.parse(configRows[0].data) : configRows[0].data;
     if (!config || !config.botToken) return;
 
-    // Short polling
-    const res = await fetch(`${TG_BASE}${config.botToken}/getUpdates?offset=${lastUpdateId + 1}&limit=50&timeout=0`);
+    const offset = lastUpdateId + 1;
+    const res = await fetch(`${TG_BASE}${config.botToken}/getUpdates?offset=${offset}&limit=50&timeout=0`);
     const data = await res.json();
 
     if (!data.ok || !data.result || data.result.length === 0) return;
