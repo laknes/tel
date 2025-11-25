@@ -9,7 +9,7 @@ import { DashboardStats } from './components/DashboardStats';
 import { WelcomeModal } from './components/WelcomeModal';
 import { OrderList } from './components/OrderList';
 import { Auth } from './components/Auth';
-import { StoreCheckout } from './components/StoreCheckout'; // New import
+import { StoreCheckout } from './components/StoreCheckout'; 
 import { StorageService } from './services/storage';
 import { AuthService } from './services/auth';
 import { sendProductToTelegram } from './services/telegram';
@@ -19,8 +19,10 @@ function App() {
   const [checkoutProductId, setCheckoutProductId] = useState<string | null>(null);
 
   useEffect(() => {
+    // Check both query params (standard) and hash routing if used
     const params = new URLSearchParams(window.location.search);
     const prodId = params.get('checkout');
+    
     if (prodId) {
       setCheckoutProductId(prodId);
     }
