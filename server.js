@@ -16,6 +16,9 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const PUBLIC_URL = process.env.PUBLIC_URL || `http://127.0.0.1:${PORT}`;
 
+console.log(`🚀 Server starting...`);
+console.log(`🔗 Public URL for Bot Links: ${PUBLIC_URL}`);
+
 app.use(cors());
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'dist')));
