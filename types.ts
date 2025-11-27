@@ -96,25 +96,12 @@ export interface Order {
   customerId?: string;
   customerName: string;
   customerPhone?: string;
-  
   address?: Address;
-  customerAddress?: string;
-
+  customerAddress?: string; // Legacy support
   totalAmount: number;
   status: OrderStatus;
   items: OrderItem[];
-  
   shippingMethod?: string;
   shippingCost?: number;
-  
   createdAt: number;
-}
-
-export interface ActivityLog {
-  id: string;
-  userId: string;
-  userName: string;
-  action: string;
-  details?: string;
-  timestamp: number;
 }

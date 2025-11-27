@@ -18,13 +18,16 @@ export const Settings: React.FC = () => {
 
   const [status, setStatus] = useState<'idle' | 'saved'>('idle');
   const [botInfo, setBotInfo] = useState<BotInfo | null>(null);
+  const [channelName, setChannelName] = useState<string>('');
   const [logs, setLogs] = useState<TelegramLog[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [verifiedUsers, setVerifiedUsers] = useState<VerifiedUser[]>([]);
   
+  // Shipping State
   const [shippingMethods, setShippingMethods] = useState<ShippingMethod[]>([]);
   const [newShipping, setNewShipping] = useState<ShippingMethod>({ id: '', name: '', cost: 0, estimatedDays: '' });
 
+  // Verification State
   const [targetChatId, setTargetChatId] = useState('');
   const [verifyLoading, setVerifyLoading] = useState(false);
   const [verifyMsg, setVerifyMsg] = useState('');
@@ -35,9 +38,14 @@ export const Settings: React.FC = () => {
 
   const loadSettings = async () => {
       const saved = await StorageService.getTelegramConfig();
-      if (saved) setConfig({ ...config, ...saved });
+      if (saved) setConfig({
+          ...config,
+          ...saved // Merge saved config
+      });
       setLogs(StorageService.getTelegramLogs());
       setVerifiedUsers(await StorageService.getVerifiedUsers());
+      
+      // Load Shipping
       try {
         const res = await fetch('/api/store/shipping-methods');
         if(res.ok) setShippingMethods(await res.json());
@@ -56,6 +64,10 @@ export const Settings: React.FC = () => {
     if (config.botToken) {
       const info = await getBotInfo(config.botToken);
       setBotInfo(info);
+    }
+    if (config.botToken && config.chatId) {
+      const chan = await getChannelInfo(config.botToken, config.chatId);
+      setChannelName(chan ? chan.title : 'یافت نشد / خطا');
     }
     setIsLoading(false);
   };
@@ -82,6 +94,7 @@ export const Settings: React.FC = () => {
       });
   };
 
+  // --- Verification Logic ---
   const handleSendRequest = async () => {
       if (!targetChatId) return;
       setVerifyLoading(true);

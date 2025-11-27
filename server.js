@@ -13,45 +13,57 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+// Read Public URL from .env or fallback to localhost
 const PUBLIC_URL = process.env.PUBLIC_URL || `http://127.0.0.1:${PORT}`;
 
-console.log(`🚀 Server Starting...`);
-console.log(`🔗 Web App URL: ${PUBLIC_URL}`);
+console.log('--- SYSTEM STARTUP ---');
+console.log(`🌍 Web App Public URL: ${PUBLIC_URL}`);
 
 app.use(cors());
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'dist')));
 
-// --- DATABASE CONFIG & INIT ---
+// --- DATABASE CONNECTION ---
 const dbConfig = {
   host: '127.0.0.1',
   user: 'root',
-  password: '', // Standard for local/tel.sh setup
+  password: '', // Optimized for tel.sh script
   database: 'teleshop_db',
-  multipleStatements: true,
   waitForConnections: true,
-  connectionLimit: 10
+  connectionLimit: 10,
+  queueLimit: 0,
+  multipleStatements: true
 };
 
 let pool;
 
 async function initDB() {
-  try {
-    console.log('🔄 Connecting to Database...');
-    const tempConnection = await mysql.createConnection({
-      host: dbConfig.host,
-      user: dbConfig.user,
-      password: dbConfig.password
-    });
-    await tempConnection.query(`CREATE DATABASE IF NOT EXISTS ${dbConfig.database}`);
-    await tempConnection.end();
+  let retries = 5;
+  while (retries > 0) {
+    try {
+      console.log(`🔄 Connecting to Database... (${retries} attempts left)`);
+      const tempConn = await mysql.createConnection({
+        host: dbConfig.host, user: dbConfig.user, password: dbConfig.password
+      });
+      await tempConn.query(`CREATE DATABASE IF NOT EXISTS ${dbConfig.database}`);
+      await tempConn.end();
 
-    pool = mysql.createPool(dbConfig);
-    
-    // Test Connection
-    await pool.query('SELECT 1');
-    console.log('✅ Database Connected Successfully!');
+      pool = mysql.createPool(dbConfig);
+      await pool.query('SELECT 1'); // Test connection
+      console.log('✅ Database Connected Successfully!');
+      
+      await initTables();
+      return;
+    } catch (e) {
+      console.error(`⚠️ DB Error: ${e.message}`);
+      retries--;
+      await new Promise(res => setTimeout(res, 5000));
+    }
+  }
+  console.error('❌ CRITICAL: Could not connect to Database. Run ./tel.sh to repair.');
+}
 
+async function initTables() {
     const tables = [
       `CREATE TABLE IF NOT EXISTS products (id VARCHAR(255) PRIMARY KEY, productCode VARCHAR(50), name VARCHAR(255), price DECIMAL(15,0), itemsPerPackage INT DEFAULT 1, category VARCHAR(255), description TEXT, imageUrl LONGTEXT, createdAt BIGINT)`,
       `CREATE TABLE IF NOT EXISTS categories (id VARCHAR(255) PRIMARY KEY, name VARCHAR(255))`,
@@ -76,37 +88,36 @@ async function initDB() {
         const defaultShipping = [{ id: 'post', name: 'پست پیشتاز', cost: 45000, estimatedDays: '۳ تا ۵ روز کاری' }, { id: 'tipax', name: 'تیپاکس', cost: 0, estimatedDays: '۲ تا ۳ روز کاری' }];
         await pool.query('INSERT INTO configs VALUES (?, ?)', ['shipping', JSON.stringify(defaultShipping)]);
     }
-
-  } catch (error) { 
-    console.error('❌ DATABASE ERROR:', error.message);
-    console.error('⚠️  Run ./tel.sh and select "Repair Database" to fix permissions.');
-  }
 }
 
 initDB();
 
 const checkDB = (req, res, next) => {
-  if (!pool) return res.status(503).json({ success: false, message: 'Database disconnected. Check server logs.' });
+  if (!pool) return res.status(503).json({ success: false, message: 'Database is unavailable.' });
   next();
 };
 
-// --- ADMIN APIs ---
+// --- API ENDPOINTS ---
+
 app.post('/api/login', checkDB, async (req, res) => {
-  const { username, password } = req.body;
   try {
-    const [rows] = await pool.query('SELECT * FROM users WHERE username = ?', [username]);
-    if (rows.length === 0) return res.json({ success: false, message: 'User not found' });
-    if (rows[0].password !== password) return res.json({ success: false, message: 'Wrong password' });
-    res.json({ success: true, user: rows[0] });
+    const [rows] = await pool.query('SELECT * FROM users WHERE username = ?', [req.body.username]);
+    if (rows.length > 0 && rows[0].password === req.body.password) {
+        res.json({ success: true, user: rows[0] });
+    } else {
+        res.json({ success: false, message: 'اطلاعات ورود اشتباه است' });
+    }
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Products
 app.get('/api/products', checkDB, async (req, res) => {
-  try { const [rows] = await pool.query('SELECT * FROM products'); res.json(rows); } catch (e) { res.status(500).json([]); }
+  try { const [rows] = await pool.query('SELECT * FROM products'); res.json(rows); } catch { res.json([]); }
 });
 app.post('/api/products', checkDB, async (req, res) => {
   const p = req.body;
-  await pool.query('INSERT INTO products (id, productCode, name, price, itemsPerPackage, category, description, imageUrl, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE productCode=?, name=?, price=?, itemsPerPackage=?, category=?, description=?, imageUrl=?', [p.id, p.productCode, p.name, p.price, p.itemsPerPackage || 1, p.category, p.description, p.imageUrl, p.createdAt, p.productCode, p.name, p.price, p.itemsPerPackage || 1, p.category, p.description, p.imageUrl]);
+  await pool.query('INSERT INTO products (id, productCode, name, price, itemsPerPackage, category, description, imageUrl, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE productCode=?, name=?, price=?, itemsPerPackage=?, category=?, description=?, imageUrl=?', 
+  [p.id, p.productCode, p.name, p.price, p.itemsPerPackage || 1, p.category, p.description, p.imageUrl, p.createdAt, p.productCode, p.name, p.price, p.itemsPerPackage || 1, p.category, p.description, p.imageUrl]);
   res.json({ success: true });
 });
 app.delete('/api/products/:id', checkDB, async (req, res) => {
@@ -114,12 +125,12 @@ app.delete('/api/products/:id', checkDB, async (req, res) => {
   res.json({ success: true });
 });
 
+// Categories
 app.get('/api/categories', checkDB, async (req, res) => {
-  try { const [rows] = await pool.query('SELECT * FROM categories'); res.json(rows); } catch (e) { res.status(500).json([]); }
+  try { const [rows] = await pool.query('SELECT * FROM categories'); res.json(rows); } catch { res.json([]); }
 });
 app.post('/api/categories', checkDB, async (req, res) => {
-  const c = req.body;
-  await pool.query('INSERT INTO categories VALUES (?, ?) ON DUPLICATE KEY UPDATE name=?', [c.id, c.name, c.name]);
+  await pool.query('INSERT INTO categories VALUES (?, ?) ON DUPLICATE KEY UPDATE name=?', [req.body.id, req.body.name, req.body.name]);
   res.json({ success: true });
 });
 app.delete('/api/categories/:id', checkDB, async (req, res) => {
@@ -127,104 +138,86 @@ app.delete('/api/categories/:id', checkDB, async (req, res) => {
   res.json({ success: true });
 });
 
+// Orders
 app.get('/api/orders', checkDB, async (req, res) => {
   try {
       const [rows] = await pool.query('SELECT * FROM orders ORDER BY createdAt DESC');
       res.json(rows.map(r => ({ ...r, items: JSON.parse(r.items || '[]'), customerAddress: JSON.parse(r.customerAddress || '{}') })));
-  } catch (e) { res.status(500).json([]); }
+  } catch { res.json([]); }
 });
 app.post('/api/orders', checkDB, async (req, res) => {
   const o = req.body;
-  await pool.query('INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=?', [o.id, o.customerName, o.customerPhone, JSON.stringify(o.address), o.shippingMethod, o.shippingCost, o.totalAmount, o.status, JSON.stringify(o.items), o.createdAt, o.status]);
-  if (o.customerId) {
-      await pool.query('DELETE FROM carts WHERE userId = ?', [o.customerId]);
-  }
+  await pool.query('INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=?', 
+  [o.id, o.customerName, o.customerPhone, JSON.stringify(o.address), o.shippingMethod, o.shippingCost, o.totalAmount, o.status, JSON.stringify(o.items), o.createdAt, o.status]);
+  
+  if (o.customerId) await pool.query('DELETE FROM carts WHERE userId = ?', [o.customerId]); // Clear cart
   res.json({ success: true });
 });
 
+// Configs
 app.get('/api/config/telegram', checkDB, async (req, res) => {
   try {
       const [rows] = await pool.query('SELECT data FROM configs WHERE id = ?', ['telegram']);
-      res.json(rows.length ? (typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data) : null);
-  } catch (e) { res.json(null); }
+      res.json(rows.length ? JSON.parse(rows[0].data) : null);
+  } catch { res.json(null); }
 });
 app.post('/api/config/telegram', checkDB, async (req, res) => {
   await pool.query('INSERT INTO configs VALUES (?, ?) ON DUPLICATE KEY UPDATE data=?', ['telegram', JSON.stringify(req.body), JSON.stringify(req.body)]);
   res.json({ success: true });
 });
 
-app.get('/api/verified-users', checkDB, async (req, res) => {
-  try { const [rows] = await pool.query('SELECT * FROM verified_users'); res.json(rows); } catch (e) { res.status(500).json([]); }
-});
-app.post('/api/verified-users', checkDB, async (req, res) => {
-  const u = req.body;
-  await pool.query('INSERT INTO verified_users VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE phoneNumber=?', [u.userId, u.firstName, u.lastName, u.username, u.phoneNumber, u.verifiedAt, u.phoneNumber]);
-  res.json({ success: true });
-});
-
-// --- STORE APIs ---
+// Store APIs
 app.get('/api/store/shipping-methods', checkDB, async (req, res) => {
     try {
         const [rows] = await pool.query('SELECT data FROM configs WHERE id = ?', ['shipping']);
-        res.json(rows.length ? (typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data) : []);
-    } catch (e) { res.json([]); }
+        res.json(rows.length ? JSON.parse(rows[0].data) : []);
+    } catch { res.json([]); }
 });
 app.post('/api/store/shipping-methods', checkDB, async (req, res) => {
     await pool.query('INSERT INTO configs VALUES (?, ?) ON DUPLICATE KEY UPDATE data=?', ['shipping', JSON.stringify(req.body), JSON.stringify(req.body)]);
     res.json({ success: true });
 });
-app.post('/api/store/login', checkDB, async (req, res) => {
-    const { username, password } = req.body;
-    const [rows] = await pool.query('SELECT * FROM users WHERE username = ?', [username]);
-    if (rows.length > 0 && rows[0].password === password) res.json({ success: true, user: rows[0] });
-    else res.json({ success: false, message: 'Invalid credentials' });
-});
-app.post('/api/store/register', checkDB, async (req, res) => {
-    const { username, password, fullName } = req.body;
-    try {
-        await pool.query('INSERT INTO users VALUES (?, ?, ?, ?, ?)', [username, password, fullName, 'CUSTOMER', true]);
-        res.json({ success: true, user: { username, fullName, role: 'CUSTOMER' } });
-    } catch(e) { res.json({ success: false, message: 'User exists' }); }
-});
-
-// CART API
 app.get('/api/store/cart/:userId', checkDB, async (req, res) => {
     try {
         const [cartRows] = await pool.query('SELECT items FROM carts WHERE userId = ?', [req.params.userId]);
         if (cartRows.length === 0) return res.json([]);
-        const items = typeof cartRows[0].items === 'string' ? JSON.parse(cartRows[0].items) : cartRows[0].items;
+        const items = JSON.parse(cartRows[0].items || '[]');
         const [products] = await pool.query('SELECT * FROM products');
         const fullItems = items.map(item => {
             const product = products.find(p => p.id === item.productId);
             return product ? { ...product, quantity: item.quantity } : null;
         }).filter(i => i !== null);
         res.json(fullItems);
-    } catch (e) { res.status(500).json([]); }
+    } catch { res.json([]); }
+});
+app.post('/api/store/login', checkDB, async (req, res) => {
+    try {
+        const [rows] = await pool.query('SELECT * FROM users WHERE username = ?', [req.body.username]);
+        if (rows.length > 0 && rows[0].password === req.body.password) res.json({ success: true, user: rows[0] });
+        else res.json({ success: false, message: 'رمز عبور اشتباه است' });
+    } catch { res.json({ success: false, message: 'خطا' }); }
+});
+app.post('/api/store/register', checkDB, async (req, res) => {
+    try {
+        await pool.query('INSERT INTO users VALUES (?, ?, ?, ?, ?)', [req.body.username, req.body.password, req.body.fullName, 'CUSTOMER', true]);
+        res.json({ success: true, user: { username: req.body.username, fullName: req.body.fullName, role: 'CUSTOMER' } });
+    } catch { res.json({ success: false, message: 'این نام کاربری وجود دارد' }); }
 });
 
-// --- TELEGRAM BOT LOGIC ---
+// --- TELEGRAM BOT (POLLING) ---
 const TG_BASE = 'https://api.telegram.org/bot';
 let lastUpdateId = 0;
-
-const dataURItoBuffer = (dataURI) => {
-  if (!dataURI || !dataURI.startsWith('data:')) return null;
-  const byteString = atob(dataURI.split(',')[1]);
-  const ab = new ArrayBuffer(byteString.length);
-  const ia = new Uint8Array(ab);
-  for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
-  return Buffer.from(ia);
-};
 
 async function runBot() {
   if (!pool) return;
   try {
     const [configRows] = await pool.query('SELECT data FROM configs WHERE id = ?', ['telegram']);
     if (configRows.length === 0) return;
-    const config = typeof configRows[0].data === 'string' ? JSON.parse(configRows[0].data) : configRows[0].data;
+    const config = JSON.parse(configRows[0].data);
     if (!config || !config.botToken) return;
 
-    const offset = lastUpdateId + 1;
-    const res = await fetch(`${TG_BASE}${config.botToken}/getUpdates?offset=${offset}&limit=50&timeout=0`);
+    // Short Polling
+    const res = await fetch(`${TG_BASE}${config.botToken}/getUpdates?offset=${lastUpdateId + 1}&limit=50&timeout=0`);
     const data = await res.json();
 
     if (!data.ok || !data.result || data.result.length === 0) return;
@@ -232,185 +225,140 @@ async function runBot() {
     const [products] = await pool.query('SELECT * FROM products');
     const [categories] = await pool.query('SELECT * FROM categories');
     
+    // Helper Functions
     const sendMsg = async (chatId, text, markup = null) => {
-        const body = { chat_id: chatId, text, parse_mode: 'Markdown' };
-        if (markup) body.reply_markup = markup;
-        await fetch(`${TG_BASE}${config.botToken}/sendMessage`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+        await fetch(`${TG_BASE}${config.botToken}/sendMessage`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown', reply_markup: markup }) });
+    };
+    const answerCallback = async (id, text = null) => {
+        await fetch(`${TG_BASE}${config.botToken}/answerCallbackQuery`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ callback_query_id: id, text }) });
     };
 
-    const sendPhoto = async (chatId, photoData, caption, markup = null) => {
-        const formData = new FormData();
-        formData.append('chat_id', chatId);
-        formData.append('caption', caption);
-        formData.append('parse_mode', 'Markdown');
-        if (markup) formData.append('reply_markup', JSON.stringify(markup));
-        const blob = new Blob([photoData], { type: 'image/jpeg' });
-        formData.append('photo', blob, 'image.jpg');
-        await fetch(`${TG_BASE}${config.botToken}/sendPhoto`, { method: 'POST', body: formData });
-    };
-
-    const answerCallback = async (callbackId, text) => {
-        await fetch(`${TG_BASE}${config.botToken}/answerCallbackQuery`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ callback_query_id: callbackId, text }) });
-    };
-
-    const mainMenuInline = {
-        inline_keyboard: [[{ text: "🛍 محصولات", callback_data: "cmd_products" }, { text: "🛒 سبد خرید", callback_data: "cmd_cart" }], [{ text: "🔍 جستجو", callback_data: "cmd_search" }, { text: "📞 ارتباط با ما", callback_data: "cmd_contact" }]]
-    };
+    // Main Menu
+    const mainMenu = { inline_keyboard: [[{ text: "🛍 محصولات", callback_data: "cmd_products" }, { text: "🛒 سبد خرید", callback_data: "cmd_cart" }], [{ text: "🔍 جستجو", callback_data: "cmd_search" }, { text: "📞 پشتیبانی", callback_data: "cmd_contact" }]] };
 
     for (const update of data.result) {
         if (update.update_id > lastUpdateId) lastUpdateId = update.update_id;
 
-        const CART_LINK = (uid) => `${PUBLIC_URL}?cart=${uid}`;
+        // Dynamic Cart Link
+        const CART_LINK = `${PUBLIC_URL}/?cart=${update.callback_query ? update.callback_query.from.id : (update.message ? update.message.from.id : '')}`;
 
-        // Inline Query (Search)
+        // 1. INLINE QUERY
         if (update.inline_query) {
             const query = update.inline_query.query.toLowerCase();
             const filtered = products.filter(p => p.name.toLowerCase().includes(query) || (p.productCode && p.productCode.toLowerCase().includes(query))).slice(0, 20);
             const results = filtered.map(p => ({
                 type: 'article', id: p.id, title: p.name,
-                description: `کد: ${p.productCode || '-'} | 📦 بسته: ${p.itemsPerPackage || 1} عدد | ${Number(p.price).toLocaleString()} تومان`,
-                thumb_url: p.imageUrl || 'https://via.placeholder.com/100',
-                input_message_content: { message_text: `🛍 *${p.name}*\n💵 ${Number(p.price).toLocaleString()} تومان`, parse_mode: 'Markdown' },
+                description: `${p.price.toLocaleString()} تومان`,
+                input_message_content: { message_text: `🛍 ${p.name}\n💰 ${p.price.toLocaleString()} تومان`, parse_mode: 'Markdown' },
                 reply_markup: { inline_keyboard: [[{ text: "➕ افزودن به سبد", callback_data: `add_${p.id}` }]] }
             }));
             await fetch(`${TG_BASE}${config.botToken}/answerInlineQuery`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ inline_query_id: update.inline_query.id, results, cache_time: 1 }) });
             continue;
         }
 
-        // Callback Query
+        // 2. CALLBACKS
         if (update.callback_query) {
             const cb = update.callback_query;
             const data = cb.data;
             const chatId = cb.message.chat.id;
             const userId = cb.from.id;
 
-            // Add to Cart Logic
+            // Add to Cart
             if (data.startsWith('add_')) {
                 const pid = data.split('_')[1];
                 const [cartRows] = await pool.query('SELECT items FROM carts WHERE userId = ?', [userId]);
-                let items = cartRows.length ? (typeof cartRows[0].items === 'string' ? JSON.parse(cartRows[0].items) : cartRows[0].items) : [];
+                let items = cartRows.length ? JSON.parse(cartRows[0].items) : [];
                 const exist = items.find(i => i.productId === pid);
-                if (exist) exist.quantity++;
-                else items.push({ productId: pid, quantity: 1 });
-                
+                if (exist) exist.quantity++; else items.push({ productId: pid, quantity: 1 });
                 await pool.query('INSERT INTO carts VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE items=?, updatedAt=?', [userId, JSON.stringify(items), Date.now(), JSON.stringify(items), Date.now()]);
-                await answerCallback(cb.id, "✅ به سبد خرید اضافه شد");
-                continue;
-            }
-
-            // Clear Cart
-            if (data === 'cmd_clear') {
-                await pool.query('DELETE FROM carts WHERE userId = ?', [userId]);
-                await answerCallback(cb.id, "سبد خرید خالی شد");
-                await sendMsg(chatId, "🗑 سبد خرید شما خالی شد.", mainMenuInline);
+                await answerCallback(cb.id, "✅ به سبد اضافه شد");
                 continue;
             }
 
             // View Cart
             if (data === 'cmd_cart') {
-                await answerCallback(cb.id);
                 const [cartRows] = await pool.query('SELECT items FROM carts WHERE userId = ?', [userId]);
-                const items = cartRows.length ? (typeof cartRows[0].items === 'string' ? JSON.parse(cartRows[0].items) : cartRows[0].items) : [];
-                
+                const items = cartRows.length ? JSON.parse(cartRows[0].items) : [];
                 if (items.length === 0) {
-                    await sendMsg(chatId, "🛒 سبد خرید شما خالی است.", mainMenuInline);
+                    await sendMsg(chatId, "🛒 سبد خرید خالی است.", mainMenu);
                 } else {
                     let msg = "🛒 *سبد خرید شما:*\n\n";
                     let total = 0;
                     items.forEach(i => {
                         const p = products.find(prod => prod.id === i.productId);
                         if (p) {
-                            const sub = p.price * i.quantity;
-                            total += sub;
-                            msg += `🔸 ${p.name} (${i.quantity} عدد) - ${sub.toLocaleString()} ت\n`;
+                            total += p.price * i.quantity;
+                            msg += `▪️ ${p.name} (${i.quantity} عدد)\n`;
                         }
                     });
                     msg += `\n💵 *جمع کل: ${total.toLocaleString()} تومان*`;
-                    
-                    await sendMsg(chatId, msg, {
-                        inline_keyboard: [
-                            [{ text: "💳 تکمیل خرید (Web App)", url: CART_LINK(userId) }],
-                            [{ text: "❌ خالی کردن سبد", callback_data: "cmd_clear" }],
-                            [{ text: "🔙 بازگشت", callback_data: "cmd_start" }]
-                        ]
-                    });
-                }
-                continue;
-            }
-
-            // Product Details
-            if (data.startsWith('prod_')) {
-                const pid = data.split('_')[1];
-                const product = products.find(p => p.id === pid);
-                if (product) {
-                    const caption = `🛍 *${product.name}*\n🔢 کد: ${product.productCode || '---'}\n📦 بسته: ${product.itemsPerPackage || 1} عدد\n💵 قیمت: ${Number(product.price).toLocaleString()} تومان\n\n📝 ${product.description}`;
-                    const itemMarkup = { 
-                        inline_keyboard: [
-                            [{ text: "➕ افزودن به سبد خرید", callback_data: `add_${product.id}` }], 
-                            [{ text: "🔙 بازگشت", callback_data: `cat_${product.category}` }]
-                        ] 
-                    };
-                    if (product.imageUrl && product.imageUrl.startsWith('data:')) {
-                        const buffer = dataURItoBuffer(product.imageUrl);
-                        if (buffer) await sendPhoto(chatId, buffer, caption, itemMarkup);
-                        else await sendMsg(chatId, caption, itemMarkup);
-                    } else await sendMsg(chatId, caption, itemMarkup);
+                    await sendMsg(chatId, msg, { inline_keyboard: [[{ text: "💳 تکمیل خرید (Web App)", url: CART_LINK }], [{ text: "❌ خالی کردن", callback_data: "cmd_clear" }], [{ text: "🔙 منو", callback_data: "cmd_start" }]] });
                 }
                 await answerCallback(cb.id);
                 continue;
             }
 
-            // Navigation (Products, Categories)
+            // Clear Cart
+            if (data === 'cmd_clear') {
+                await pool.query('DELETE FROM carts WHERE userId = ?', [userId]);
+                await answerCallback(cb.id, "سبد خالی شد");
+                await sendMsg(chatId, "🗑 سبد خرید پاک شد.", mainMenu);
+                continue;
+            }
+
+            // Products List (Categories)
             if (data === 'cmd_products') {
-                if (categories.length === 0) {
-                     const productButtons = products.slice(0, 20).map(p => ([{ text: `${p.name}`, callback_data: `prod_${p.id}` }]));
-                    productButtons.push([{ text: "🔙 بازگشت", callback_data: "cmd_start" }]);
-                    await sendMsg(chatId, "🛍 *محصولات:*", { inline_keyboard: productButtons });
-                } else {
-                    const catButtons = categories.map(c => ([{ text: `📂 ${c.name}`, callback_data: `cat_${c.id}` }]));
-                    catButtons.push([{ text: "🔙 بازگشت", callback_data: "cmd_start" }]);
-                    await sendMsg(chatId, "🗂 *انتخاب دسته بندی:*", { inline_keyboard: catButtons });
-                }
+                const btns = categories.map(c => [{ text: `📂 ${c.name}`, callback_data: `cat_${c.id}` }]);
+                btns.push([{ text: "🔙 منو", callback_data: "cmd_start" }]);
+                await sendMsg(chatId, "🗂 دسته‌بندی را انتخاب کنید:", { inline_keyboard: btns });
                 await answerCallback(cb.id);
                 continue;
-            } 
-            
+            }
+
+            // Products in Category
             if (data.startsWith('cat_')) {
                 const catId = data.split('_')[1];
-                const filteredProducts = products.filter(p => p.category === catId);
-                const productButtons = filteredProducts.slice(0, 20).map(p => ([{ text: `${p.name}`, callback_data: `prod_${p.id}` }]));
-                productButtons.push([{ text: "🔙 بازگشت", callback_data: "cmd_products" }]);
-                await sendMsg(chatId, `📂 محصولات دسته بندی:`, { inline_keyboard: productButtons });
+                const prods = products.filter(p => p.category === catId);
+                const btns = prods.map(p => [{ text: p.name, callback_data: `prod_${p.id}` }]);
+                btns.push([{ text: "🔙 بازگشت", callback_data: "cmd_products" }]);
+                await sendMsg(chatId, "👇 محصول را انتخاب کنید:", { inline_keyboard: btns });
+                await answerCallback(cb.id);
+                continue;
+            }
+
+            // Product Detail
+            if (data.startsWith('prod_')) {
+                const p = products.find(prod => prod.id === data.split('_')[1]);
+                if (p) {
+                    const caption = `🛍 *${p.name}*\n📦 بسته: ${p.itemsPerPackage || 1} تایی\n💵 قیمت: ${Number(p.price).toLocaleString()} تومان\n\n📝 ${p.description}`;
+                    await sendMsg(chatId, caption, { inline_keyboard: [[{ text: "➕ افزودن به سبد", callback_data: `add_${p.id}` }], [{ text: "🔙 بازگشت", callback_data: `cat_${p.category}` }]] });
+                }
                 await answerCallback(cb.id);
                 continue;
             }
 
             if (data === 'cmd_start') {
-                await sendMsg(chatId, "🏠 *منوی اصلی*", mainMenuInline);
+                await sendMsg(chatId, "🏠 منوی اصلی:", mainMenu);
                 await answerCallback(cb.id);
                 continue;
             }
-            
-            await answerCallback(cb.id);
-            continue;
         }
 
+        // 3. MESSAGES
         if (update.message && update.message.text === '/start') {
-            await sendMsg(update.message.chat.id, config.welcomeMessage || `👋 سلام! به فروشگاه ما خوش آمدید.`, mainMenuInline);
+            await sendMsg(update.message.chat.id, `👋 سلام! به فروشگاه ما خوش آمدید.\nاز دکمه‌های زیر استفاده کنید.`, mainMenu);
         }
     }
-  } catch (e) { 
-      // Silent error loop
-  }
+  } catch (e) { /* Ignore polling errors */ }
 }
 
 setInterval(runBot, 2000);
 
-// SPA Fallback
+// --- SPA Fallback ---
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`🚀 Server running on port ${PORT}`);
 });
