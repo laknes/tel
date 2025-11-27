@@ -15,20 +15,22 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const PUBLIC_URL = process.env.PUBLIC_URL || `http://127.0.0.1:${PORT}`;
 
-console.log(`🚀 Server Starting on Port ${PORT}`);
+console.log(`🚀 Server Starting...`);
 console.log(`🔗 Web App URL: ${PUBLIC_URL}`);
 
 app.use(cors());
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'dist')));
 
-// DB Config (Matches update.sh reset)
+// --- DATABASE CONFIG & INIT ---
 const dbConfig = {
   host: '127.0.0.1',
   user: 'root',
-  password: '',
+  password: '', // Standard for local/tel.sh setup
   database: 'teleshop_db',
-  multipleStatements: true
+  multipleStatements: true,
+  waitForConnections: true,
+  connectionLimit: 10
 };
 
 let pool;
@@ -62,23 +64,33 @@ async function initDB() {
 
     for (const sql of tables) await pool.query(sql);
     
+    // Seed Admin
     const [rows] = await pool.query('SELECT * FROM users WHERE username = ?', ['admin']);
-    if (rows.length === 0) await pool.query('INSERT INTO users VALUES (?, ?, ?, ?, ?)', ['admin', '123', 'مدیر سیستم', 'ADMIN', true]);
+    if (rows.length === 0) {
+        await pool.query('INSERT INTO users VALUES (?, ?, ?, ?, ?)', ['admin', '123', 'مدیر سیستم', 'ADMIN', true]);
+    }
     
+    // Seed Shipping
+    const [shipRows] = await pool.query('SELECT data FROM configs WHERE id = ?', ['shipping']);
+    if (shipRows.length === 0) {
+        const defaultShipping = [{ id: 'post', name: 'پست پیشتاز', cost: 45000, estimatedDays: '۳ تا ۵ روز کاری' }, { id: 'tipax', name: 'تیپاکس', cost: 0, estimatedDays: '۲ تا ۳ روز کاری' }];
+        await pool.query('INSERT INTO configs VALUES (?, ?)', ['shipping', JSON.stringify(defaultShipping)]);
+    }
+
   } catch (error) { 
-    console.error('❌ DB CONNECTION FAILED:', error.message);
-    console.error('⚠️  Run ./update.sh to fix database permissions.');
+    console.error('❌ DATABASE ERROR:', error.message);
+    console.error('⚠️  Run ./tel.sh and select "Repair Database" to fix permissions.');
   }
 }
 
 initDB();
 
 const checkDB = (req, res, next) => {
-  if (!pool) return res.status(500).json({ success: false, message: 'Database disconnected' });
+  if (!pool) return res.status(503).json({ success: false, message: 'Database disconnected. Check server logs.' });
   next();
 };
 
-// --- APIs ---
+// --- ADMIN APIs ---
 app.post('/api/login', checkDB, async (req, res) => {
   const { username, password } = req.body;
   try {
@@ -90,8 +102,7 @@ app.post('/api/login', checkDB, async (req, res) => {
 });
 
 app.get('/api/products', checkDB, async (req, res) => {
-  const [rows] = await pool.query('SELECT * FROM products');
-  res.json(rows);
+  try { const [rows] = await pool.query('SELECT * FROM products'); res.json(rows); } catch (e) { res.status(500).json([]); }
 });
 app.post('/api/products', checkDB, async (req, res) => {
   const p = req.body;
@@ -104,8 +115,7 @@ app.delete('/api/products/:id', checkDB, async (req, res) => {
 });
 
 app.get('/api/categories', checkDB, async (req, res) => {
-  const [rows] = await pool.query('SELECT * FROM categories');
-  res.json(rows);
+  try { const [rows] = await pool.query('SELECT * FROM categories'); res.json(rows); } catch (e) { res.status(500).json([]); }
 });
 app.post('/api/categories', checkDB, async (req, res) => {
   const c = req.body;
@@ -118,8 +128,10 @@ app.delete('/api/categories/:id', checkDB, async (req, res) => {
 });
 
 app.get('/api/orders', checkDB, async (req, res) => {
-  const [rows] = await pool.query('SELECT * FROM orders ORDER BY createdAt DESC');
-  res.json(rows.map(r => ({ ...r, items: typeof r.items === 'string' ? JSON.parse(r.items) : r.items, customerAddress: typeof r.customerAddress === 'string' ? JSON.parse(r.customerAddress) : r.customerAddress })));
+  try {
+      const [rows] = await pool.query('SELECT * FROM orders ORDER BY createdAt DESC');
+      res.json(rows.map(r => ({ ...r, items: JSON.parse(r.items || '[]'), customerAddress: JSON.parse(r.customerAddress || '{}') })));
+  } catch (e) { res.status(500).json([]); }
 });
 app.post('/api/orders', checkDB, async (req, res) => {
   const o = req.body;
@@ -131,8 +143,10 @@ app.post('/api/orders', checkDB, async (req, res) => {
 });
 
 app.get('/api/config/telegram', checkDB, async (req, res) => {
-  const [rows] = await pool.query('SELECT data FROM configs WHERE id = ?', ['telegram']);
-  res.json(rows.length ? (typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data) : null);
+  try {
+      const [rows] = await pool.query('SELECT data FROM configs WHERE id = ?', ['telegram']);
+      res.json(rows.length ? (typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data) : null);
+  } catch (e) { res.json(null); }
 });
 app.post('/api/config/telegram', checkDB, async (req, res) => {
   await pool.query('INSERT INTO configs VALUES (?, ?) ON DUPLICATE KEY UPDATE data=?', ['telegram', JSON.stringify(req.body), JSON.stringify(req.body)]);
@@ -140,8 +154,7 @@ app.post('/api/config/telegram', checkDB, async (req, res) => {
 });
 
 app.get('/api/verified-users', checkDB, async (req, res) => {
-  const [rows] = await pool.query('SELECT * FROM verified_users');
-  res.json(rows);
+  try { const [rows] = await pool.query('SELECT * FROM verified_users'); res.json(rows); } catch (e) { res.status(500).json([]); }
 });
 app.post('/api/verified-users', checkDB, async (req, res) => {
   const u = req.body;
@@ -149,9 +162,12 @@ app.post('/api/verified-users', checkDB, async (req, res) => {
   res.json({ success: true });
 });
 
+// --- STORE APIs ---
 app.get('/api/store/shipping-methods', checkDB, async (req, res) => {
-    const [rows] = await pool.query('SELECT data FROM configs WHERE id = ?', ['shipping']);
-    res.json(rows.length ? (typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data) : []);
+    try {
+        const [rows] = await pool.query('SELECT data FROM configs WHERE id = ?', ['shipping']);
+        res.json(rows.length ? (typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data) : []);
+    } catch (e) { res.json([]); }
 });
 app.post('/api/store/shipping-methods', checkDB, async (req, res) => {
     await pool.query('INSERT INTO configs VALUES (?, ?) ON DUPLICATE KEY UPDATE data=?', ['shipping', JSON.stringify(req.body), JSON.stringify(req.body)]);
@@ -171,7 +187,7 @@ app.post('/api/store/register', checkDB, async (req, res) => {
     } catch(e) { res.json({ success: false, message: 'User exists' }); }
 });
 
-// Get Cart Items
+// CART API
 app.get('/api/store/cart/:userId', checkDB, async (req, res) => {
     try {
         const [cartRows] = await pool.query('SELECT items FROM carts WHERE userId = ?', [req.params.userId]);
@@ -186,7 +202,7 @@ app.get('/api/store/cart/:userId', checkDB, async (req, res) => {
     } catch (e) { res.status(500).json([]); }
 });
 
-// --- TELEGRAM BOT ---
+// --- TELEGRAM BOT LOGIC ---
 const TG_BASE = 'https://api.telegram.org/bot';
 let lastUpdateId = 0;
 
@@ -246,26 +262,29 @@ async function runBot() {
 
         const CART_LINK = (uid) => `${PUBLIC_URL}?cart=${uid}`;
 
+        // Inline Query (Search)
         if (update.inline_query) {
             const query = update.inline_query.query.toLowerCase();
             const filtered = products.filter(p => p.name.toLowerCase().includes(query) || (p.productCode && p.productCode.toLowerCase().includes(query))).slice(0, 20);
             const results = filtered.map(p => ({
                 type: 'article', id: p.id, title: p.name,
-                description: `کد: ${p.productCode || '-'} | ${Number(p.price).toLocaleString()} تومان`,
+                description: `کد: ${p.productCode || '-'} | 📦 بسته: ${p.itemsPerPackage || 1} عدد | ${Number(p.price).toLocaleString()} تومان`,
                 thumb_url: p.imageUrl || 'https://via.placeholder.com/100',
                 input_message_content: { message_text: `🛍 *${p.name}*\n💵 ${Number(p.price).toLocaleString()} تومان`, parse_mode: 'Markdown' },
-                reply_markup: { inline_keyboard: [[{ text: "🛒 مشاهده سبد", callback_data: "cmd_cart" }]] }
+                reply_markup: { inline_keyboard: [[{ text: "➕ افزودن به سبد", callback_data: `add_${p.id}` }]] }
             }));
             await fetch(`${TG_BASE}${config.botToken}/answerInlineQuery`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ inline_query_id: update.inline_query.id, results, cache_time: 1 }) });
             continue;
         }
 
+        // Callback Query
         if (update.callback_query) {
             const cb = update.callback_query;
             const data = cb.data;
             const chatId = cb.message.chat.id;
             const userId = cb.from.id;
 
+            // Add to Cart Logic
             if (data.startsWith('add_')) {
                 const pid = data.split('_')[1];
                 const [cartRows] = await pool.query('SELECT items FROM carts WHERE userId = ?', [userId]);
@@ -273,18 +292,21 @@ async function runBot() {
                 const exist = items.find(i => i.productId === pid);
                 if (exist) exist.quantity++;
                 else items.push({ productId: pid, quantity: 1 });
+                
                 await pool.query('INSERT INTO carts VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE items=?, updatedAt=?', [userId, JSON.stringify(items), Date.now(), JSON.stringify(items), Date.now()]);
                 await answerCallback(cb.id, "✅ به سبد خرید اضافه شد");
                 continue;
             }
 
+            // Clear Cart
             if (data === 'cmd_clear') {
                 await pool.query('DELETE FROM carts WHERE userId = ?', [userId]);
-                await answerCallback(cb.id, "سبد خالی شد");
+                await answerCallback(cb.id, "سبد خرید خالی شد");
                 await sendMsg(chatId, "🗑 سبد خرید شما خالی شد.", mainMenuInline);
                 continue;
             }
 
+            // View Cart
             if (data === 'cmd_cart') {
                 await answerCallback(cb.id);
                 const [cartRows] = await pool.query('SELECT items FROM carts WHERE userId = ?', [userId]);
@@ -316,25 +338,8 @@ async function runBot() {
                 continue;
             }
 
-            if (data === 'cmd_products') {
-                if (categories.length === 0) {
-                     const productButtons = products.slice(0, 20).map(p => ([{ text: `${p.name}`, callback_data: `prod_${p.id}` }]));
-                    productButtons.push([{ text: "🔙 بازگشت", callback_data: "cmd_start" }]);
-                    await sendMsg(chatId, "🛍 *محصولات:*", { inline_keyboard: productButtons });
-                } else {
-                    const catButtons = categories.map(c => ([{ text: `📂 ${c.name}`, callback_data: `cat_${c.id}` }]));
-                    catButtons.push([{ text: "🔙 بازگشت", callback_data: "cmd_start" }]);
-                    await sendMsg(chatId, "🗂 *انتخاب دسته بندی:*", { inline_keyboard: catButtons });
-                }
-            } 
-            else if (data.startsWith('cat_')) {
-                const catId = data.split('_')[1];
-                const filteredProducts = products.filter(p => p.category === catId);
-                const productButtons = filteredProducts.slice(0, 20).map(p => ([{ text: `${p.name}`, callback_data: `prod_${p.id}` }]));
-                productButtons.push([{ text: "🔙 بازگشت", callback_data: "cmd_products" }]);
-                await sendMsg(chatId, `📂 محصولات دسته بندی:`, { inline_keyboard: productButtons });
-            }
-            else if (data.startsWith('prod_')) {
+            // Product Details
+            if (data.startsWith('prod_')) {
                 const pid = data.split('_')[1];
                 const product = products.find(p => p.id === pid);
                 if (product) {
@@ -351,8 +356,40 @@ async function runBot() {
                         else await sendMsg(chatId, caption, itemMarkup);
                     } else await sendMsg(chatId, caption, itemMarkup);
                 }
+                await answerCallback(cb.id);
+                continue;
             }
-            else if (data === 'cmd_start') await sendMsg(chatId, "🏠 *منوی اصلی*", mainMenuInline);
+
+            // Navigation (Products, Categories)
+            if (data === 'cmd_products') {
+                if (categories.length === 0) {
+                     const productButtons = products.slice(0, 20).map(p => ([{ text: `${p.name}`, callback_data: `prod_${p.id}` }]));
+                    productButtons.push([{ text: "🔙 بازگشت", callback_data: "cmd_start" }]);
+                    await sendMsg(chatId, "🛍 *محصولات:*", { inline_keyboard: productButtons });
+                } else {
+                    const catButtons = categories.map(c => ([{ text: `📂 ${c.name}`, callback_data: `cat_${c.id}` }]));
+                    catButtons.push([{ text: "🔙 بازگشت", callback_data: "cmd_start" }]);
+                    await sendMsg(chatId, "🗂 *انتخاب دسته بندی:*", { inline_keyboard: catButtons });
+                }
+                await answerCallback(cb.id);
+                continue;
+            } 
+            
+            if (data.startsWith('cat_')) {
+                const catId = data.split('_')[1];
+                const filteredProducts = products.filter(p => p.category === catId);
+                const productButtons = filteredProducts.slice(0, 20).map(p => ([{ text: `${p.name}`, callback_data: `prod_${p.id}` }]));
+                productButtons.push([{ text: "🔙 بازگشت", callback_data: "cmd_products" }]);
+                await sendMsg(chatId, `📂 محصولات دسته بندی:`, { inline_keyboard: productButtons });
+                await answerCallback(cb.id);
+                continue;
+            }
+
+            if (data === 'cmd_start') {
+                await sendMsg(chatId, "🏠 *منوی اصلی*", mainMenuInline);
+                await answerCallback(cb.id);
+                continue;
+            }
             
             await answerCallback(cb.id);
             continue;
@@ -362,7 +399,9 @@ async function runBot() {
             await sendMsg(update.message.chat.id, config.welcomeMessage || `👋 سلام! به فروشگاه ما خوش آمدید.`, mainMenuInline);
         }
     }
-  } catch (e) { }
+  } catch (e) { 
+      // Silent error loop
+  }
 }
 
 setInterval(runBot, 2000);
