@@ -13,14 +13,17 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-// Read Public URL from .env or fallback to localhost
+// Robust Public URL detection
 const PUBLIC_URL = process.env.PUBLIC_URL || `http://127.0.0.1:${PORT}`;
 
 console.log('--- SYSTEM STARTUP ---');
-console.log(`🌍 Web App Public URL: ${PUBLIC_URL}`);
+console.log(`🌍 Server running at: http://0.0.0.0:${PORT}`);
+console.log(`🔗 Web App Public Link: ${PUBLIC_URL}`);
 
 app.use(cors());
 app.use(bodyParser.json({ limit: '50mb' }));
+
+// Serve Static Files (Frontend)
 app.use(express.static(path.join(__dirname, 'dist')));
 
 // --- DATABASE CONNECTION ---
@@ -355,6 +358,7 @@ async function runBot() {
 setInterval(runBot, 2000);
 
 // --- SPA Fallback ---
+// IMPORTANT: This must be the LAST route
 app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
