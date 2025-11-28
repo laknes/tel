@@ -52,8 +52,7 @@ export interface User {
   username: string;
   password: string;
   fullName: string;
-  role?: 'ADMIN' | 'EDITOR' | 'CUSTOMER';
-  phoneNumber?: string;
+  role?: 'ADMIN' | 'EDITOR';
   isVerified?: boolean;
 }
 
@@ -74,34 +73,22 @@ export interface OrderItem {
   priceAtTime: number;
 }
 
-export interface ShippingMethod {
-  id: string;
-  name: string;
-  cost: number;
-  estimatedDays: string;
-  logo?: string;
-}
-
-export interface Address {
-  province: string;
-  city: string;
-  fullAddress: string;
-  plaque: string;
-  unit: string;
-  postalCode: string;
-}
-
 export interface Order {
   id: string;
-  customerId?: string;
   customerName: string;
   customerPhone?: string;
-  address?: Address;
-  customerAddress?: string; // Legacy support
+  customerAddress?: string;
   totalAmount: number;
   status: OrderStatus;
   items: OrderItem[];
-  shippingMethod?: string;
-  shippingCost?: number;
   createdAt: number;
+}
+
+export interface ActivityLog {
+  id: string;
+  userId: string;
+  userName: string;
+  action: string;
+  details?: string;
+  timestamp: number;
 }
